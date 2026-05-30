@@ -4,7 +4,8 @@ newspost.py — Localized Digest Pipeline
 Target: local Dallas/America/Chicago time, clean article text, diversified sources, zero duplicates, clean BBCode.
 Baseline: 1.0.0 (Official)
 """
-__version__ = subprocess.check_output(["git", "describe", "--tags", "--always"], stderr=subprocess.DEVNULL, text=True).strip()
+__version__ = "1.1.0"
+
 
 import datetime
 import pytz
@@ -55,7 +56,6 @@ KEEP_KEYWORDS = [
     "treasury", "reserve", "inflation", "macro", "liquidity",
 ]
 
-
 # ---------------------------------------------------------------------------
 #  Time helpers
 # ---------------------------------------------------------------------------
@@ -72,7 +72,6 @@ def make_aware(dt: datetime.datetime, raw: str = "") -> datetime.datetime:
         return CT.localize(dt).astimezone(datetime.timezone.utc)
     # Strings with a timezone but no AM/PM: treat as UTC.
     return dt.astimezone(datetime.timezone.utc)
-
 
 def _dt_parse(s: str) -> datetime.datetime | None:
     if not s:
@@ -124,7 +123,6 @@ def _dt_parse(s: str) -> datetime.datetime | None:
             pass
 
     return None
-
 
 def extract_date_from_html_or_markdown(url: str, content: str, metadata: dict) -> str:
     """Robust extraction of published date from URL patterns, metadata, or markdown content."""
@@ -187,7 +185,6 @@ def extract_date_from_html_or_markdown(url: str, content: str, metadata: dict) -
 
     return ""
 
-
 def to_ct_12h(raw):
     """Convert *any* published-time string to 'YYYY-MM-DD HH:MM AM/PM CT'."""
     if not raw or len(str(raw).strip()) < 6:
@@ -209,11 +206,9 @@ def to_ct_12h(raw):
     ct_dt = dt_aware.astimezone(CT)
     return f"{ct_dt.strftime('%Y-%m-%d')} {ct_dt.strftime('%I:%M %p')} CT"
 
-
 def now_ct_12h():
     """Dallas current local time."""
     return datetime.datetime.now(pytz.utc).astimezone(CT).strftime("%Y-%m-%d %I:%M %p CT")
-
 
 def get_time_of_day_edition() -> str:
     """Calculate a descriptive 'time of day color' edition string based on Chicago local time."""
@@ -236,13 +231,11 @@ def get_time_of_day_edition() -> str:
     else:  # 22, 23
         return "Before Midnight Edition"
 
-
 def get_historical_ct_time(hours_ago: int) -> str:
     """Dallas local time offset by hours_ago."""
     now_dt = datetime.datetime.now(pytz.utc).astimezone(CT)
     hist_dt = now_dt - datetime.timedelta(hours=hours_ago)
     return f"{hist_dt.strftime('%Y-%m-%d')} {hist_dt.strftime('%I:%M %p')} CT"
-
 
 # ---------------------------------------------------------------------------
 #  Content cleanup
@@ -272,7 +265,6 @@ def clean_text(raw_text: str) -> str:
     t = re.sub(r'\bSkip\b', '', t)
     return t
 
-
 def extract_better_summary(text: str) -> str:
     if not text:
         return ""
@@ -283,7 +275,6 @@ def extract_better_summary(text: str) -> str:
         return sents[0] + " " + sents[1] if len(sents) > 1 else sents[0]
     short = text[:200].strip().rstrip('.').rstrip()
     return short + "..."
-
 
 def enforce_five_sentences(summary: str) -> str:
     sents = re.split(r'(?<=[.!?])\s+', summary)
@@ -300,7 +291,6 @@ def enforce_five_sentences(summary: str) -> str:
     while len(sents) < 5:
         sents.append(filler[len(sents)])
     return " ".join(sents[:5])
-
 
 # ---------------------------------------------------------------------------
 #  Deduplication & Diversity Selection
@@ -387,7 +377,6 @@ def are_similar(title1: str, title2: str) -> bool:
 
     return False
 
-
 def are_similar_cross(title1: str, title2: str) -> bool:
     """Stricter cross-source similarity: catches same-story-different-source pairs
     that the main are_similar() misses (e.g., 'Texas Appoints CleanSpark Exec, Bitcoin Miner CEO
@@ -410,7 +399,6 @@ def are_similar_cross(title1: str, title2: str) -> bool:
         if ratio > 0.55:
             return True
     return False
-
 
 def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> list:
     """Select exactly target_count stories with no duplicates and strict source caps."""
@@ -478,7 +466,6 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
 
     return selected
 
-
 # ---------------------------------------------------------------------------
 #  Market Data
 # ---------------------------------------------------------------------------
@@ -516,7 +503,6 @@ def get_btc_market_data() -> dict:
         print(f"Coinbase API Error: {e}")
     return {"price": 76500.0, "change_24h": 0.0, "mcap": 1500000000000.0}
 
-
 def get_btc_history() -> dict:
     """Fetch 3d, 7d, 30d BTC performance from CoinGecko."""
     try:
@@ -534,7 +520,6 @@ def get_btc_history() -> dict:
     except Exception as e:
         print(f"History Fetch Error: {e}")
     return {"prices": [76500.0] * 30, "3d_change": 0.0, "7d_change": 0.0, "30d_change": 0.0}
-
 
 def get_macro_context() -> dict:
     """Fetch Fear & Greed index and calculate 7-day sentiment momentum."""
@@ -562,7 +547,6 @@ def get_macro_context() -> dict:
     except Exception as e:
         print(f"Fear & Greed API Error: {e}")
     return {"fng": "Unknown", "sentiment": "Neutral", "momentum_7d": 0, "trend": "flat"}
-
 
 def _fetch_exchange(name, url_fn):
     """Fetch single exchange price from Binance, Kraken, Bitstamp, Coinbase, Gemini."""
@@ -619,7 +603,6 @@ def get_spot_premium() -> dict:
         print(f"Spot Premium Fetch Error: {e}")
     return res
 
-
 def get_technical_context(prices: list) -> dict:
     """Calculate SMA from 30d slice and volatility (std dev) of last 3 days."""
     if not prices:
@@ -632,7 +615,6 @@ def get_technical_context(prices: list) -> dict:
     variance = sum((x - mean)**2 for x in recent) / len(recent)
     vol = variance**0.5
     return {"ma": ma, "vol": vol}
-
 
 def get_onchain_metrics() -> dict:
     """Fetch live Bitcoin on-chain metrics (hashrate, recommended fees) from mempool.space public API."""
@@ -658,7 +640,6 @@ def get_onchain_metrics() -> dict:
         
     return metrics
 
-
 def get_derivatives_metrics() -> dict:
     """Fetch live Bitcoin derivatives market metrics (Open Interest, Funding Rate) from Kraken Futures public API."""
     print("[-] Fetching live derivatives metrics from Kraken Futures...")
@@ -678,7 +659,6 @@ def get_derivatives_metrics() -> dict:
         print(f"Kraken Futures API Error: {e}")
     return metrics
 
-
 def get_economic_events(date_str: str) -> str:
     """Fetch relevant US economic calendar events (CPI, NFP, GDP, FOMC, Fed, PCE) from TradingEconomics API."""
     print("[-] Fetching economic calendar events...")
@@ -697,7 +677,6 @@ def get_economic_events(date_str: str) -> str:
     except Exception as e:
         print(f"Economic Calendar API Error: {e}")
     return ""
-
 
 def safe_float(val, default=0.0) -> float:
     """Safely convert any value (including LLM-returned sentiment strings) to a float."""
@@ -722,14 +701,12 @@ def safe_float(val, default=0.0) -> float:
                     pass
         return default
 
-
 def strip_query_string(url: str) -> str:
     """Strip query parameters and any trailing slashes/whitespace from a URL."""
     if not url:
         return ""
     # Split on '?' to isolate the path, then clean up trailing slash
     return url.split('?')[0].strip().rstrip('/')
-
 
 def get_source_domain(url: str) -> str:
     try:
@@ -741,7 +718,6 @@ def get_source_domain(url: str) -> str:
         return domain
     except Exception:
         return 'unknown'
-
 
 def clean_boilerplate(markdown_text: str) -> str:
     if not markdown_text:
@@ -773,7 +749,6 @@ def clean_boilerplate(markdown_text: str) -> str:
             
         cleaned_lines.append(line)
     return '\n'.join(cleaned_lines)
-
 
 def compute_hotness(art: dict, keep_keywords: list, discard_keywords: list) -> float:
     content_raw = art.get("content", "")
@@ -832,7 +807,6 @@ def compute_hotness(art: dict, keep_keywords: list, discard_keywords: list) -> f
     penalty_mult = 2.0 if btc_count < 4 else 1.0
     return max(0.0, (keep_score - disc_score * 0.5) + btc_count * 0.2 + length_bonus * 10.0 + recency * 20.0 + structural_bonus - non_btc_penalty * penalty_mult)
 
-
 # ---------------------------------------------------------------------------
 #  Crawl & Validate Helpers
 # ---------------------------------------------------------------------------
@@ -849,7 +823,6 @@ def search_searxng(query: str, time_range: str = "day") -> list:
     except Exception as e:
         print(f"[!] SearXNG search failed for '{query}': {e}")
     return []
-
 
 def is_article_link(url: str, parent_url: str) -> bool:
     try:
@@ -884,7 +857,6 @@ def is_article_link(url: str, parent_url: str) -> bool:
         pass
     return False
 
-
 def query_ollama(prompt: str) -> str | None:
     payload = {
         "model": OLLAMA_MODEL,
@@ -899,7 +871,6 @@ def query_ollama(prompt: str) -> str | None:
     except Exception as e:
         print(f"[!] Ollama Error: {e}")
     return None
-
 
 def query_ollama_chat(prompt: str) -> str | None:
     payload = {
@@ -916,7 +887,6 @@ def query_ollama_chat(prompt: str) -> str | None:
         print(f"[!] Ollama Chat Error: {e}")
     return None
 
-
 def extract_json(s: str | None) -> dict | None:
     if not s:
         return None
@@ -930,7 +900,6 @@ def extract_json(s: str | None) -> dict | None:
             except Exception:
                 pass
     return None
-
 
 # ---------------------------------------------------------------------------
 #  Sanitization & Conversion
@@ -976,7 +945,6 @@ def markdown_to_bbcode(md_text: str) -> str:
     
     return bb
 
-
 def clean_number(n: str):
     """Convert raw number token to float, return None if not convertible."""
     token = n
@@ -998,7 +966,6 @@ def clean_number(n: str):
         return float(token)
     except (ValueError, OverflowError):
         return None
-
 
 def validate_numbers(summary: str, raw_content: str) -> str:
     """Catch LLM numeric hallucinations by cross-checking against raw article content."""
@@ -1051,7 +1018,6 @@ def validate_numbers(summary: str, raw_content: str) -> str:
     
     return summary
 
-
 def fetch_direct_fallback(url: str) -> str:
     """Fetch raw HTML via requests with browser headers and strip to plain text."""
     headers = {
@@ -1073,7 +1039,6 @@ def fetch_direct_fallback(url: str) -> str:
     except Exception as e:
         print(f"      [FALLBACK ERR] {e}")
     return ""
-
 
 # ---------------------------------------------------------------------------
 #  Pipeline Main
@@ -1423,7 +1388,6 @@ Write me four things, in BobClawblaw's voice:
 
 Return valid JSON with keys opening, outlook, price_analysis, and movers (as an array of strings)."""
 
-
     ctx = query_ollama(ctx_prompt)
     ctx_p = extract_json(ctx)
     opening = ctx_p["opening"] if ctx_p and ctx_p.get("opening") else ""
@@ -1523,8 +1487,6 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
     else:
         print("[*] DRY-RUN done.")
         print("    Re-run with --post to publish to Bitcointalk.")
-
-
 
 def run_price_analysis_only():
     """Run just the market data + price_analysis LLM call, for testing."""
