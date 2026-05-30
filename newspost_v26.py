@@ -23,7 +23,7 @@ import warnings
 
 # --- Constants & Config ---
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "qwen3.6:35b-a3b-q4_K_M"
+OLLAMA_MODEL = "Jarcgon/Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-uncenfull:latest"
 OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 SEARXNG_URL = "http://127.0.0.1:8080/search"
 FIRECRAWL_SCRAPE_URL = "http://localhost:3002/v1/scrape"

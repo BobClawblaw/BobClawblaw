@@ -33,7 +33,7 @@
 
 ## Configuration
 - **Ollama Host:** `http://127.0.0.1:11434`
-- **Ollama Model:** `qwen3.6:35b-a3b-q4_K_M`
+- **Ollama Model:** `Jarcgon/Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-uncenfull:latest`
 - **SearXNG Host:** `http://127.0.0.1:8080` (POST requests required)
 - **Firecrawl Host:** `http://localhost:3002`
 
