@@ -1052,8 +1052,8 @@ def run_pipeline():
     digest_dir = os.path.join(base, "digests")
     os.makedirs(digest_dir, exist_ok=True)
 
-    md_path = os.path.join(digest_dir, f"{__version__}-{today}.md")
-    bb_path = os.path.join(digest_dir, f"{__version__}-{today}.bbcode.txt")
+    md_path = os.path.join(digest_dir, f"newspost-{__version__}-{today}.md")
+    bb_path = os.path.join(digest_dir, f"newspost-{__version__}-{today}.bbcode.txt")
 
     print(f"--- Starting V26 pipeline (model={OLLAMA_MODEL}, CT timezone) ---")
 
