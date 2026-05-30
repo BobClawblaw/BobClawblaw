@@ -4,7 +4,7 @@ newspost.py — Localized Digest Pipeline
 Target: local Dallas/America/Chicago time, clean article text, diversified sources, zero duplicates, clean BBCode.
 Baseline: 1.0.0 (Official)
 """
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import datetime
 import pytz
@@ -13,6 +13,7 @@ import sys
 import json
 from typing import Callable, List, Optional
 import requests
+import concurrent.futures
 import requests
 import re
 import subprocess
@@ -563,19 +564,57 @@ def get_macro_context() -> dict:
     return {"fng": "Unknown", "sentiment": "Neutral", "momentum_7d": 0, "trend": "flat"}
 
 
+def _fetch_exchange(name, url_fn):
+    """Fetch single exchange price from Binance, Kraken, Bitstamp, Coinbase, Gemini."""
+    try:
+        r = requests.get(url_fn(), timeout=8)
+        if r.status_code != 200:
+            return 0.0
+        d = r.json()
+        if name == "coinbase":
+            p = float(d["data"]["amount"])
+        elif name == "kraken":
+            p = float(d["result"]["XXBTZUSD"]["c"][0])
+        elif name == "binance":
+            p = float(d["bidPrice"])
+        elif name == "bitstamp":
+            p = float(d["last"])
+        elif name == "gemini":
+            p = float(d["price"])
+        else:
+            return 0.0
+        return p
+    except Exception:
+        return 0.0
+
 def get_spot_premium() -> dict:
-    """Fetch spot BTC prices from Coinbase and Kraken to compute a premium spread."""
-    print("[-] Fetching spot premium index...")
+    """Fetch spot BTC prices from multiple exchanges to compute a weighted premium spread."""
+    print("[-] Fetching multi-exchange spot premium index...")
     res = {"coinbase": 0.0, "kraken": 0.0, "premium": 0.0}
     try:
-        r1 = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=10)
-        r2 = requests.get("https://api.kraken.com/0/public/Ticker?pair=XXBTZUSD", timeout=10)
-        if r1.status_code == 200 and r2.status_code == 200:
-            cb_price = float(r1.json()["data"]["amount"])
-            kr_price = float(r2.json()["result"]["XXBTZUSD"]["c"][0])
-            res["coinbase"] = cb_price
-            res["kraken"] = kr_price
-            res["premium"] = cb_price - kr_price
+        configs = [
+            ("coinbase", lambda: "https://api.coinbase.com/v2/prices/BTC-USD/spot"),
+            ("kraken", lambda: "https://api.kraken.com/0/public/Ticker?pair=XXBTZUSD"),
+            ("binance", lambda: "https://api.binance.com/api/v3/ticker/bookTicker?symbol=BTCUSDT"),
+            ("bitstamp", lambda: "https://www.bitstamp.net/api/v2/btcusd/ticker/"),
+            ("gemini", lambda: "https://api.gemini.com/v1/prices/btcusd"),
+        ]
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futs = [executor.submit(_fetch_exchange, n, u) for n, u in configs]
+            prices = {}
+            for fut, (n, _) in zip(futs, configs):
+                p = fut.result()
+                if p > 0:
+                    prices[n] = p
+        if prices:
+            res["coinbase"] = prices.get("coinbase", 0.0)
+            res["kraken"] = prices.get("kraken", 0.0)
+            # Weighted avg: Binance+Coinbase = 60%, Kraken = 20%, Gemini = 20%
+            w = {"coinbase": 0.30, "kraken": 0.20, "binance": 0.30,
+                 "bitstamp": 0.20, "gemini": 0.20}
+            res["premium"] = sum(prices[n] * w.get(n, 0) for n in prices) / sum(w.get(n, 0) for n in prices)
+        else:
+            print("  All exchange price fetches failed, falling back to defaults")
     except Exception as e:
         print(f"Spot Premium Fetch Error: {e}")
     return res
@@ -1367,7 +1406,7 @@ Do NOT include markdown code block wrappers. Just raw JSON."""
 - Derivatives Open Interest: ${derivs['open_interest']/1e6:,.2f}M
 - Perpetual Funding Rate (annualized): {derivs['funding_rate_annual']:+.4f}%
 - Fear & Greed Index: {macro['fng']} ({macro['sentiment']} | 7-day momentum: {macro['momentum_7d']:+d} points, trend is {macro['trend']})
-- Spot Arbitrage Premium (Coinbase vs Kraken): {premium['premium']:+.2f} USD (Coinbase: ${premium['coinbase']:,.2f} | Kraken: ${premium['kraken']:,.2f})
+- Spot Arbitrage Premium (VW Average): {premium['premium']:+.2f} USD (Coinbase: ${premium['coinbase']:,.2f}, Kraken: ${premium['kraken']:,.2f}, Binance: ${premium['binance']:,.2f})
 {eco_str}{divergence_context}
 
 Note: Today is {local_weekday}.
@@ -1414,7 +1453,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
             f"while the 30-day view points to {trend_30d} ({history['30d_change']:+.2f}%). "
             f"The 30-day moving average sits at ${tech['ma']:,.2f} with a 3-day volatility reading of {tech['vol']:,.2f}. "
             f"With hashrate holding at {onchain['hashrate_eh']:.1f} EH/s, derivatives funding predicting {derivs['funding_rate_annual']:+.3f}% annualized, "
-            f"and the Coinbase spot premium spread sitting at {premium['premium']:+.2f} USD, "
+            f"and the Coinbase spot premium weighted average premium sitting at {premium['premium']:+.2f} USD, "
             f"the network is healthy while we chop through this range."
         )
     if not movers:
@@ -1513,7 +1552,7 @@ def run_price_analysis_only():
 - 30-day change: {history['30d_change']:+.2f}%
 - Market cap: ${mkt['mcap']/1e12:.2f}T
 - Fear & Greed Index: {macro['fng']} ({macro['sentiment']} | 7-day momentum: {macro['momentum_7d']:+d} points, trend is {macro['trend']})
-- Spot Arbitrage Premium (Coinbase vs Kraken): {premium['premium']:+.2f} USD (Coinbase: ${premium['coinbase']:,.2f} | Kraken: ${premium['kraken']:,.2f})
+- Spot Arbitrage Premium (VW Average): {premium['premium']:+.2f} USD (Coinbase: ${premium['coinbase']:,.2f}, Kraken: ${premium['kraken']:,.2f}, Binance: ${premium['binance']:,.2f})
 - 30-day Avg Price (MA): ${tech['ma']:,.2f}
 - Recent Volatility (3d StdDev): {tech['vol']:,.2f}
 - Estimated Hashrate: {onchain['hashrate_eh']:.1f} EH/s (Diff change: {onchain['diff_change']:+.2f}%)
