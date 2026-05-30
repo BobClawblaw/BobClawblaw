@@ -4,7 +4,9 @@ newspost.py — Localized Digest Pipeline
 Target: local Dallas/America/Chicago time, clean article text, diversified sources, zero duplicates, clean BBCode.
 Baseline: 1.0.0 (Official)
 """
-__version__ = "1.1.0"
+from subprocess import check_output as _git_ver
+__version__ = __import__("subprocess").check_output(["git", "describe", "--tags", "--always"], stderr=__import__("subprocess").DEVNULL, text=True).strip()
+__version__ = "." + __version__.split("-")[0].lstrip("v")
 
 
 import datetime
