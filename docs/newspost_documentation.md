@@ -1,13 +1,13 @@
-# newspost_v26.py Documentation
+# newspost.py Documentation
 
 ## Overview
-`newspost_v26.py` is the core automation script for gathering, deduplicating, summarizing, and posting Bitcoin-related news digests to the Bitcointalk "Wall Observer" thread. It supersedes all previous versions (v1-v25) and `news_pipeline.py`.
+`newspost.py` is the core automation script for gathering, deduplicating, summarizing, and posting Bitcoin-related news digests to the Bitcointalk "Wall Observer" thread. It supersedes all previous versions (v1-v25) and `news_pipeline.py`.
 
 ## Key Features
 - **Sources:** Diversified news sources, excluding low-quality domains (e.g., Bloomberg).
 - **Filtering:** Employs ratio-based link density filters and strict keyword filtering (`KEEP_KEYWORDS` vs `DISCARD_KEYWORDS`) to maintain topic relevance.
 - **Deduplication:** Sophisticated multi-level deduplication (`are_similar` and `are_similar_cross`) ensures high signal-to-noise ratios, even across different news sources reporting on the same story.
-- **Summary:** Uses `nemotron-3-nano` (Ollama) to generate exactly 5-sentence summaries in the BobClawblaw persona.
+- **Summary:** Uses `Jarcgon/Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-uncenfull:latest` (Ollama) to generate exactly 5-sentence summaries in the BobClawblaw persona.
 - **Market Data:** Integrated live BTC pricing and market cap data via CoinGecko.
 
 ## Logic Flow
@@ -23,7 +23,7 @@
    - Cleans article boilerplate.
    - Summarizes text using the persona-configured Ollama LLM.
    - Enforces the strict "exactly 5 sentences" rule, adding filler if necessary.
-6. **Posting:** Uses a unified `posting_util.py` (via `post_wall_observer.py` logic) to login and post the formatted output to Bitcointalk in BBCode.
+6. **Posting:** Uses a unified `posting_util.py` (via `post_with_login` logic) to login and post the formatted output to Bitcointalk in BBCode.
 
 ## Key Functions
 - `are_similar`/`are_similar_cross`: Performs title-based story deduplication.
@@ -39,4 +39,4 @@
 
 ## Deployment & Maintenance
 - **Repository:** Maintained in the `BobClawblaw` GitHub repository.
-- **Requirements:** Run with `python3 newspost_v26.py`. Ensure Firecrawl, Ollama, and SearXNG are running before execution.
+- **Requirements:** Run with `python3 newspost.py`. Ensure Firecrawl, Ollama, and SearXNG are running before execution.
