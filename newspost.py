@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """
-newspost_v26.py — Localized Digest Pipeline
+newspost.py — Localized Digest Pipeline
 Target: local Dallas/America/Chicago time, clean article text, diversified sources, zero duplicates, clean BBCode.
-v16 improvements over v15:
-  - Removed Bloomberg (bloomberg.com) from searches and index crawl discovery (poor data quality/paywall blocks)
-  - Retains the dynamic ratio-based skip rule: if nb_count > 0 and btc_count < nb_count * 1.5, skip
-  - Retains clean_boilerplate link density filters and validate_numbers float fixes
+Baseline: v26 (Official)
 """
 import datetime
 import pytz
