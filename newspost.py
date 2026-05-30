@@ -2,8 +2,10 @@
 """
 newspost.py — Localized Digest Pipeline
 Target: local Dallas/America/Chicago time, clean article text, diversified sources, zero duplicates, clean BBCode.
-Baseline: v26 (Official)
+Baseline: 1.0.0 (Official)
 """
+__version__ = "1.0.0"
+
 import datetime
 import pytz
 import os
@@ -1532,6 +1534,9 @@ Just write me a price analysis, in BobClawblaw's voice:
     
 
 if __name__ == "__main__":
+    if "--version" in sys.argv:
+        print(__version__)
+        sys.exit(0)
     if len(sys.argv) > 1 and "--price_analysis" in sys.argv:
         run_price_analysis_only()
     else:
