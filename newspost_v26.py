@@ -23,7 +23,7 @@ import warnings
 
 # --- Constants & Config ---
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "nemotron-3-nano"
+OLLAMA_MODEL = "qwen3.6:35b-a3b-q4_K_M"
 OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 SEARXNG_URL = "http://127.0.0.1:8080/search"
 FIRECRAWL_SCRAPE_URL = "http://localhost:3002/v1/scrape"
