@@ -5,9 +5,8 @@ Target: local Dallas/America/Chicago time, clean article text, diversified sourc
 Baseline: 1.0.0 (Official)
 """
 from subprocess import check_output as _git_ver
-__version__ = __import__("subprocess").check_output(["git", "describe", "--tags", "--always"], stderr=__import__("subprocess").DEVNULL, text=True).strip()
-__version__ = "." + __version__.split("-")[0].lstrip("v")
-
+_raw = _git_ver("git describe --tags", text=True).strip().split("-")[0].lstrip("v")
+__version__ = f"v{_raw}"
 
 import datetime
 import pytz
@@ -1053,8 +1052,8 @@ def run_pipeline():
     digest_dir = os.path.join(base, "digests")
     os.makedirs(digest_dir, exist_ok=True)
 
-    md_path = os.path.join(digest_dir, f"v26-{today}.md")
-    bb_path = os.path.join(digest_dir, f"v26-{today}.bbcode.txt")
+    md_path = os.path.join(digest_dir, f"{__version__}-{today}.md")
+    bb_path = os.path.join(digest_dir, f"{__version__}-{today}.bbcode.txt")
 
     print(f"--- Starting V26 pipeline (model={OLLAMA_MODEL}, CT timezone) ---")
 
