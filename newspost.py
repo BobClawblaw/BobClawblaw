@@ -1640,12 +1640,67 @@ Note: Today is {local_weekday}.
 
 Just write me a price analysis, in BobClawblaw's voice:
 - 3-5 sentences analyzing the price action. plainspoken, grounded, observant. Reference the live numbers. If price is down, call it. If sideways, call it. Don't invent. Incorporate on-chain blocks, leverage data, sentiment momentum, and US spot premiums where useful."""
-    
     print("Calling LLM for price analysis...")
     result = query_ollama(ctx_prompt)
     result = result.strip()
     print(f"PRICE ANALYSIS: {result}")
     
+
+def run_opening_test_only():
+    """Run just the market data + opening & outlook LLM call, for testing."""
+    from datetime import datetime
+    
+    print("Fetching market data...")
+    mkt = get_btc_market_data()
+    print(f"Bitcoin: ${mkt['price']:,.2f} ({mkt['change_24h']:+.2f}%) | MCap: ${mkt['mcap']/1e12:.2f}T")
+    history_data = get_btc_history()
+    history = history_data
+    tech = get_technical_context(history.get("prices", []))
+    onchain = get_onchain_metrics()
+    derivs = get_derivatives_metrics()
+    macro = get_macro_context()
+    premium = get_spot_premium()
+    eco = get_economic_events(datetime.now(pytz.utc).astimezone(CT).strftime("%Y-%m-%d"))
+    eco_str = f"\nEconomic Context:\n{eco.strip()}" if eco and eco.strip() else ""
+    local_weekday = datetime.now(pytz.utc).astimezone(CT).strftime("%A")
+    
+    ctx_prompt = f"""I'm watching the market today. Price data tells me:
+- Bitcoin: ${mkt['price']:,.2f}
+- 24h change: {mkt['change_24h']:+.2f}%
+- 3-day change: {history['3d_change']:+.2f}%
+- 7-day change: {history['7d_change']:+.2f}%
+- 30-day change: {history['30d_change']:+.2f}%
+- Market cap: ${mkt['mcap']/1e12:.2f}T
+- Fear & Greed Index: {macro['fng']} ({macro['sentiment']} | 7-day momentum: {macro['momentum_7d']:+d} points, trend is {macro['trend']})
+- Spot Arbitrage Premium (VW Average): {premium['premium']:+.2f} USD (Coinbase: ${premium['coinbase']:,.2f}, Kraken: ${premium['kraken']:,.2f}, Binance: ${premium['binance']:,.2f})
+- 30-day Avg Price (MA): ${tech['ma']:,.2f}
+- Recent Volatility (3d StdDev): {tech['vol']:,.2f}
+- Estimated Hashrate: {onchain['hashrate_eh']:.1f} EH/s (Diff change: {onchain['diff_change']:+.2f}%)
+- Recommended fees: Fast {onchain['fast_fee']} sat/vB | Min {onchain['min_fee']} sat/vB
+- Derivatives Open Interest: ${derivs['open_interest']/1e6:,.2f}M
+- Perpetual Funding Rate (annualized): {derivs['funding_rate_annual']:+.4f}%
+{eco_str}
+
+Note: Today is {local_weekday}.
+
+Write me two things, in BobClawblaw's voice:
+- opening: 2-3 sentences. Metric-driven but plainspoken. Grounded. No hype, no crypto bro slang, no rocket emojis. Acknowledge what's happening without overreacting. Mention the day of the week if appropriate.
+- outlook: 2-3 sentences. Still watching. What to keep an eye on next. No price predictions masquerading as facts — only data with honest caveats.
+
+Return valid JSON with keys opening and outlook."""
+    
+    print("Calling LLM for opening and outlook...")
+    result = query_ollama(ctx_prompt)
+    print("Raw response from LLM:")
+    print(result)
+    print("\nParsed JSON:")
+    parsed = extract_json(result)
+    if parsed:
+        print(f"OPENING: {parsed.get('opening')}")
+        print(f"OUTLOOK: {parsed.get('outlook')}")
+    else:
+        print("Failed to parse JSON response.")
+
 
 if __name__ == "__main__":
     if "--version" in sys.argv:
@@ -1653,5 +1708,7 @@ if __name__ == "__main__":
         sys.exit(0)
     if len(sys.argv) > 1 and "--price_analysis" in sys.argv:
         run_price_analysis_only()
+    elif len(sys.argv) > 1 and "--test-opening" in sys.argv:
+        run_opening_test_only()
     else:
         run_pipeline()
