@@ -4,8 +4,10 @@ newspost.py — Localized Digest Pipeline
 Target: local Dallas/America/Chicago time, clean article text, diversified sources, zero duplicates, clean BBCode.
 Baseline: 1.0.0 (Official)
 """
+import os
 from subprocess import check_output as _git_ver
-_raw = _git_ver("git describe --tags", text=True).strip().split("-")[0].lstrip("v")
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_raw = _git_ver(["git", "-C", _script_dir, "describe", "--tags"], text=True).strip().split("-")[0].lstrip("v")
 __version__ = f"v{_raw}"
 
 import datetime
@@ -575,7 +577,7 @@ def _fetch_exchange(name, url_fn):
 def get_spot_premium() -> dict:
     """Fetch spot BTC prices from multiple exchanges to compute a weighted premium spread."""
     print("[-] Fetching multi-exchange spot premium index...")
-    res = {"coinbase": 0.0, "kraken": 0.0, "premium": 0.0}
+    res = {"coinbase": 0.0, "kraken": 0.0, "binance": 0.0, "premium": 0.0}
     try:
         configs = [
             ("coinbase", lambda: "https://api.coinbase.com/v2/prices/BTC-USD/spot"),
@@ -594,6 +596,7 @@ def get_spot_premium() -> dict:
         if prices:
             res["coinbase"] = prices.get("coinbase", 0.0)
             res["kraken"] = prices.get("kraken", 0.0)
+            res["binance"] = prices.get("binance", 0.0)
             # Weighted avg: Binance+Coinbase = 60%, Kraken = 20%, Gemini = 20%
             w = {"coinbase": 0.30, "kraken": 0.20, "binance": 0.30,
                  "bitstamp": 0.20, "gemini": 0.20}
@@ -811,6 +814,81 @@ def compute_hotness(art: dict, keep_keywords: list, discard_keywords: list) -> f
 # ---------------------------------------------------------------------------
 #  Crawl & Validate Helpers
 # ---------------------------------------------------------------------------
+def fetch_rss_articles(domain: str) -> list:
+    """Fetch recent article links from RSS feed for a domain."""
+    import xml.etree.ElementTree as ET
+    
+    rss_map = {
+        "insights.glassnode.com": "https://insights.glassnode.com/rss/",
+        "blog.bitmex.com": "https://blog.bitmex.com/category/research/feed/",
+        "cointelegraph.com": "https://cointelegraph.com/rss",
+        "coindesk.com": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "bitcoinmagazine.com": "https://bitcoinmagazine.com/.rss/full/",
+        "news.bitcoin.com": "https://news.bitcoin.com/feed/",
+        "theblock.co": "https://www.theblock.co/rss.xml",
+        "decrypt.co": "https://decrypt.co/feed",
+        "cryptoslate.com": "https://cryptoslate.com/feed/",
+    }
+    
+    feed_url = rss_map.get(domain)
+    if not feed_url:
+        return []
+        
+    print(f"[-] Fetching RSS feed for {domain}...")
+    try:
+        r = requests.get(feed_url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
+        if r.status_code != 200:
+            print(f"[!] RSS HTTP Error {r.status_code} for {domain}")
+            return []
+            
+        text = r.text
+        links = []
+        
+        # 1. Try ET parsing
+        try:
+            root = ET.fromstring(r.content)
+            # Find in RSS format
+            for item in root.findall(".//item"):
+                link_node = item.find("link")
+                if link_node is not None and link_node.text:
+                    links.append(link_node.text.strip())
+            # Find in Atom format if empty
+            if not links:
+                for entry in root.findall(".//{http://www.w3.org/2005/Atom}entry"):
+                    link_node = entry.find("{http://www.w3.org/2005/Atom}link")
+                    if link_node is not None and link_node.attrib.get("href"):
+                        links.append(link_node.attrib.get("href").strip())
+        except Exception as et_err:
+            # Fall back to regex if XML parse fails
+            pass
+            
+        # 2. Regex fallback if XML parsing failed or returned no links
+        if not links:
+            matches = re.findall(r'<link[^>]*>(.*?)</link>', text, re.IGNORECASE | re.DOTALL)
+            for m in matches:
+                m_clean = m.strip()
+                if m_clean.startswith("http"):
+                    links.append(m_clean)
+            
+            href_matches = re.findall(r'<link\s+[^>]*href=["\'](https?://[^"\']+)["\']', text, re.IGNORECASE)
+            for hm in href_matches:
+                links.append(hm.strip())
+                
+        valid_links = []
+        seen_links = set()
+        for link in links:
+            if link in seen_links:
+                continue
+            seen_links.add(link)
+            if "http" in link:
+                valid_links.append({"url": link})
+                
+        print(f"    ✓ RSS returned {len(valid_links)} links for {domain}")
+        return valid_links
+    except Exception as e:
+        print(f"[!] RSS processing failed for {domain}: {e}")
+        return []
+
 def search_searxng(query: str, time_range: str = "day") -> list:
     """Perform POST request on SearXNG with date restrictions."""
     payload = {"q": query, "format": "json"}
@@ -835,7 +913,7 @@ def is_article_link(url: str, parent_url: str) -> bool:
             return False
         if "author" in path or "category" in path or "tag" in path or "search" in path or "/quotes/" in path or "/calculator/" in path or "/video/" in path or "/videos/" in path:
             return False
-        if any(domain in p.netloc.lower() for domain in ["cointelegraph.com", "coindesk.com", "bitcoinmagazine.com", "news.bitcoin.com", "theblock.co", "decrypt.co", "cryptoslate.com"]):
+        if any(domain in p.netloc.lower() for domain in ["cointelegraph.com", "coindesk.com", "bitcoinmagazine.com", "news.bitcoin.com", "theblock.co", "decrypt.co", "cryptoslate.com", "insights.glassnode.com", "blog.bitmex.com"]):
             if len(path.strip("/")) > 5:
                 return True
         # Generic date-in-path article detection (handles 247wallst, cnbc, and others with date subdirectories in path)
@@ -1064,6 +1142,8 @@ def run_pipeline():
 
     # --- 1. Discovery ---
     queries = [
+        'site:insights.glassnode.com bitcoin',
+        'site:blog.bitmex.com bitcoin',
         'site:cointelegraph.com bitcoin',
         'site:coindesk.com bitcoin',
         'site:bitcoinmagazine.com bitcoin',
@@ -1076,21 +1156,50 @@ def run_pipeline():
         'site:cryptoslate.com bitcoin',
         '"bitcoin news"',
     ]
-    all_hits = []
-    # Query with strict 24-hour window
-    for q in queries:
-        all_hits.extend(search_searxng(q, time_range="day"))
-        if len(all_hits) >= 100:
-            break
+    
+    rss_map = {
+        "insights.glassnode.com": "https://insights.glassnode.com/rss/",
+        "blog.bitmex.com": "https://blog.bitmex.com/category/research/feed/",
+        "cointelegraph.com": "https://cointelegraph.com/rss",
+        "coindesk.com": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "bitcoinmagazine.com": "https://bitcoinmagazine.com/.rss/full/",
+        "news.bitcoin.com": "https://news.bitcoin.com/feed/",
+        "theblock.co": "https://www.theblock.co/rss.xml",
+        "decrypt.co": "https://decrypt.co/feed",
+        "cryptoslate.com": "https://cryptoslate.com/feed/",
+    }
 
-    # If day-based query yielded extremely low count, fallback to week-based
-    if len(all_hits) < 15:
-        print("[!] Low candidate count with 'day' limit. Falling back to 'week' search.")
-        all_hits = []
+    all_hits = []
+    
+    def discover_candidates(time_range="day"):
+        hits = []
         for q in queries:
-            all_hits.extend(search_searxng(q, time_range="week"))
-            if len(all_hits) >= 150:
+            domain_match = re.search(r'site:([^\s]+)', q)
+            domain = domain_match.group(1) if domain_match else None
+            
+            used_rss = False
+            if domain and domain in rss_map:
+                rss_links = fetch_rss_articles(domain)
+                if rss_links:
+                    hits.extend(rss_links)
+                    used_rss = True
+                    
+            if not used_rss:
+                # Fallback to SearXNG
+                print(f"[-] Querying SearXNG for: '{q}' (range={time_range})...")
+                search_results = search_searxng(q, time_range=time_range)
+                hits.extend(search_results)
+                
+            if len(hits) >= 120:
                 break
+        return hits
+
+    all_hits = discover_candidates(time_range="day")
+
+    # If day-based discovery yielded extremely low count, fallback to week-based
+    if len(all_hits) < 15:
+        print("[!] Low candidate count with 'day' limit / RSS. Falling back to 'week' search.")
+        all_hits = discover_candidates(time_range="week")
 
     seen = set()
     unique = []
@@ -1315,9 +1424,9 @@ Do NOT include markdown code block wrappers. Just raw JSON."""
         print(f"    → {title[:60]}…  Published: {pub}")
         stories.append({"title": title, "url": art["url"], "published": pub, "summary": summary, "sentiment": safe_float(parsed.get("sentiment"), 0.0)})
 
-    # Refuse to post if we don't have at least 5 legitimate stories
-    if len(stories) < 5:
-        print(f"CRITICAL ERROR: Only found {len(stories)} legitimate stories. Refusing to generate digest or post as we need at least 5 stories.")
+    # Refuse to post if we don't have at least 3 legitimate stories
+    if len(stories) < 3:
+        print(f"CRITICAL ERROR: Only found {len(stories)} legitimate stories. Refusing to generate digest or post as we need at least 3 stories.")
         sys.exit(1)
 
     # --- Market metrics & assemble ---
@@ -1472,11 +1581,14 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
     # Convert & Save BBCode draft
     bb = markdown_to_bbcode(body)
     bb_wrapped = bb  # Teletype [tt] tags removed — preserves newlines for proper BBCode rendering on Bitcointalk
+
+    _ftr = f"[i][size=8pt]Spotted by BobClawblaw {__version__} ({OLLAMA_MODEL})[/size][/i]"
+    bb_wrapped += "\n" + _ftr + "\n"
+
     with open(bb_path, "w", encoding="utf-8") as f:
         f.write(bb_wrapped)
     print(f"[-] BBCode: {bb_path}")
 
-    dry = "--dry-run" in sys.argv or "--dry-run" not in sys.argv # default to dry-run always
     post = "--post" in sys.argv
     if post and "--post" in sys.argv:
         sub = f"BobClawblaw's Wall Observer Digest — {today} ({edition})"
