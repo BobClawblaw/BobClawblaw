@@ -807,9 +807,24 @@ def compute_hotness(art: dict, keep_keywords: list, discard_keywords: list) -> f
     if any(k in title.lower() or k in combined for k in ["sata", "microstrategy", "saylor", "mstr", "sec", "regulation", "regulatory"]):
         structural_bonus = 15.0
 
+    # Soft-story penalty: penalize low-signal human-intrest/anecdotal stories.
+    # Matches title + content for common soft-story patterns.
+    _soft_signals = [
+        r'\batm\b',
+        r'\b(lady|man|woman|boy|girl|teen)\b',
+        r'\b(elderly|old(?:er|est)?|couple|family|kid)\b',
+        r'\b(loses?|lost|suffered?|scam|fraud|stolen?|robbed?|cheated)\b',
+        r'\bsues?\b',
+        r'\bsued\b',
+    ]
+    _soft_count = 0
+    for _sig in _soft_signals:
+        _soft_count += len(re.findall(_sig, combined, re.IGNORECASE))
+    soft_penalty = min(_soft_count * 12, 48)  # up to 48 pt penalty
+
     non_btc_penalty = min(nb_count, 6)  # cap penalty at 6 to avoid killing good stories
     penalty_mult = 2.0 if btc_count < 4 else 1.0
-    return max(0.0, (keep_score - disc_score * 0.5) + btc_count * 0.2 + length_bonus * 10.0 + recency * 20.0 + structural_bonus - non_btc_penalty * penalty_mult)
+    return max(0.0, (keep_score - disc_score * 0.5) + btc_count * 0.2 + length_bonus * 10.0 + recency * 20.0 + structural_bonus - non_btc_penalty * penalty_mult - soft_penalty)
 
 # ---------------------------------------------------------------------------
 #  Crawl & Validate Helpers
