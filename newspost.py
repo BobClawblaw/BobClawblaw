@@ -1133,7 +1133,7 @@ def run_pipeline():
     md_path = os.path.join(digest_dir, f"newspost-{__version__}-{today}.md")
     bb_path = os.path.join(digest_dir, f"newspost-{__version__}-{today}.bbcode.txt")
 
-    print(f"--- Starting V26 pipeline (model={OLLAMA_MODEL}, CT timezone) ---")
+    print(f"--- Starting {__version__} pipeline (model={OLLAMA_MODEL}, CT timezone) ---")
 
     # Fetch live BTC price early for filtering out dated high-price articles
     mkt = get_btc_market_data()
