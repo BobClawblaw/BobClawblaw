@@ -13,6 +13,7 @@ Use --post to enable posting (requires posting_util.py + credentials).
 from __future__ import annotations
 
 import argparse
+import colorsys
 import json
 import os
 import re
@@ -41,11 +42,16 @@ DEDUP_JSON = "/tmp/buddyblocker_last_streak.json"
 HEX = ["#EF3340", "#E48118", "#F8E41E", "#12C167", "#158CE0", "#D021E3"]
 
 
-def rainbow(text: str, colors: List[str] = HEX) -> str:
-    """Return BB-style color tags for BobClawblaw."""
-    out = []
+def rainbow(text: str) -> str:
+    """Return BB-style per-character rainbow gradient (start -> finish)."""
+    n = max(1, len(text))
+    out: List[str] = []
     for i, ch in enumerate(text):
-        col = colors[i % len(colors)]
+        t = 0.0 if n == 1 else i / (n - 1)
+        # Hue sweep across the rainbow.
+        hue = t * 300.0  # 0..300 avoids wrapping hue back to red.
+        r, g, b = colorsys.hsv_to_rgb(hue / 360.0, 1.0, 1.0)
+        col = f"#{int(r * 255):02X}{int(g * 255):02X}{int(b * 255):02X}"
         out.append(f"[COLOR={col}]{ch}[/COLOR]")
     return "".join(out)
 
@@ -114,7 +120,8 @@ def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
     #   B-B-B-...-B-Buddy-Blocker!!!
     # i.e. dashes between the B's, and a dash between the last B and Buddy-Blocker.
     n = max(4, streak)
-    header = ("-".join(["B"] * n)) + "-Buddy-Blocker!!!"
+    header_raw = ("-".join(["B"] * n)) + "-Buddy-Blocker!!!"
+    header = rainbow(header_raw)
 
     parts = [header]
     for p in chain:
