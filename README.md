@@ -15,7 +15,7 @@ A local automation pipeline that compiles a small Bitcoin news digest and posts 
 2) Posting to Bitcointalk
 - `post_wall_observer.py`
   - Uses cookie persistence + credentials from `/root/.hermes/bobclawblaw/profile/`.
-  - Maps `₿` → `B` before ASCII filtering so posted content stays readable.
+  - Remaps `₿` (U+20BF) → `B` before ASCII filtering because Bitcointalk mangles non-ASCII symbols.
 
 3) Local indexing (DB-first)
 - `wall_observer_indexer.py`
