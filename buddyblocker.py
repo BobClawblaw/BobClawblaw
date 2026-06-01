@@ -124,12 +124,9 @@ def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
     header_raw = f"[ {header_text} ]"
     header = rainbow(header_raw)
 
-    parts = [header]
-    for p in chain:
-        msg = p.get("msg", "")
-        parts.append(str(msg)[:120])
+    # Flat post: don't quote/copy ChartBuddy content.
+    return header + "\n\nBuddychain noticed. No reposts."
 
-    return " ".join(parts)
 
 
 def maybe_post(chain: List[Dict[str, Any]], streak: int) -> None:
