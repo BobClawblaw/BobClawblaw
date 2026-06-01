@@ -156,18 +156,23 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     # After this many consecutive ChartBuddy posts in the *tail*, we start
     # applying the rarity rule.
-    # Default: after 4 consecutive posts, each successive post has a 33% chance.
+    # Default: after 4 consecutive posts, each successive post has a 33 percent chance.
     ap.add_argument(
         "--streak",
         type=int,
         default=4,
-        help="Tail streak threshold. No posting at exactly this value; attempt posting with 33% when streak > this.",
+        help="Tail streak threshold. No posting at exactly this value; attempt posting with 33 percent when streak > this.",
+    )
+    ap.add_argument(
+        "--post",
+        action="store_true",
+        help="Actually post to the forum when the 33 percent rule fires.",
     )
     ap.add_argument("--limit", type=int, default=200)
     ap.add_argument(
         "--no-post",
         action="store_true",
-        help="Detection-only. Never post to the forum.",
+        help="Detection-only. Overrides --post.",
     )
     ap.add_argument(
         "--dry",
@@ -177,7 +182,7 @@ def main() -> None:
     ap.add_argument(
         "--force",
         action="store_true",
-        help="Force posting even if the 33% roll fails (for testing).",
+        help="Force posting even if the 33 percent roll fails (for testing).",
     )
     ap.add_argument(
         "--ignore-dedup",
@@ -220,7 +225,7 @@ def main() -> None:
     # New rule:
     # - No posting at exactly `chance_start`.
     # - For every successive consecutive post beyond `chance_start`,
-    #   post with 33% probability.
+    #   post with 33 percent probability.
     if streak_len <= chance_start:
         print(f"[buddy] No firing: need > {chance_start} (33% rule starts after {chance_start}).")
         sys.exit(0)
@@ -260,9 +265,14 @@ def main() -> None:
 
     # Output message text
     out_path = "/tmp/buddyblocker_out.bbcode"
-    if args.no_post or args.dry:
+    if args.dry or args.no_post or not args.post:
         Path(out_path).write_text(msg)
-        print(f"[buddy] No-post mode. Wrote: {out_path}")
+        if args.dry:
+            print(f"[buddy] Dry run. Wrote: {out_path}")
+        elif args.no_post:
+            print(f"[buddy] No-post mode. Wrote: {out_path}")
+        else:
+            print(f"[buddy] Posting disabled (missing --post). Wrote: {out_path}")
         sys.exit(0)
 
     ok = maybe_post(chain, streak_len)
