@@ -185,6 +185,11 @@ def main() -> None:
         help="Force posting even if the 33 percent roll fails (for testing).",
     )
     ap.add_argument(
+        "--force-post",
+        action="store_true",
+        help="Force a forum post for the current detected streak: bypass the 33% roll and dedup gates.",
+    )
+    ap.add_argument(
         "--ignore-dedup",
         action="store_true",
         help="Ignore the dedup file for the current top_msg_id (for testing).",
@@ -226,19 +231,26 @@ def main() -> None:
     # - No posting at exactly `chance_start`.
     # - For every successive consecutive post beyond `chance_start`,
     #   post with 33 percent probability.
-    if streak_len <= chance_start:
+    if streak_len <= chance_start and not args.force_post:
         print(f"[buddy] No firing: need > {chance_start} (33% rule starts after {chance_start}).")
         sys.exit(0)
 
     P_FIRE = 0.33
 
-    # Dedup: roll once per newest msg_id.
+    if args.force_post:
+        print("[buddy] FORCE POST: bypassing 33% roll + dedup for this run.")
+
+    # Dedup: roll once per newest msg_id (unless forced).
     dedup = load_dedup()
-    if (not args.ignore_dedup) and dedup.get("top_msg_id") == top_msg_id:
+    if (
+        (not args.force_post)
+        and (not args.ignore_dedup)
+        and dedup.get("top_msg_id") == top_msg_id
+    ):
         print(f"[buddy] Already rolled for top_msg_id={top_msg_id}; skipping.")
         sys.exit(0)
 
-    if args.force:
+    if args.force_post or args.force:
         fired = True
     else:
         fired = random.random() < P_FIRE
@@ -266,7 +278,7 @@ def main() -> None:
 
     # Output message text
     out_path = "/tmp/buddyblocker_out.bbcode"
-    if args.dry or args.no_post or not args.post:
+    if args.dry or args.no_post or (not args.post and not args.force_post):
         Path(out_path).write_text(msg)
         if args.dry:
             print(f"[buddy] Dry run. Wrote: {out_path}")
