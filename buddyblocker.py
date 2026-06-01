@@ -1,325 +1,198 @@
 #!/usr/bin/env python3
+"""buddyblocker.py — detect a "buddychain" from the local index DB.
+
+This version does NOT fetch or parse forum HTML.
+It reads /root/.hermes/bobclawblaw/wall_posts.db, looks at the most recent
+posts, and finds the longest *current tail streak* of consecutive ChartBuddy
+posts.
+
+Default behavior: detection-only (no posting).
+Use --post to enable posting (requires posting_util.py + credentials).
 """
-buddyblocker.py — detect a "buddychain" (3+ consecutive ChatBuddy
-posts in the Wall Observer thread) and issue a rainbow-colored
-banner to interrupt the streak.
 
-Wall Observer: topic=178336, ChatBuddy profile u=110685.
+from __future__ import annotations
 
-Uses firecrawl + BeautifulSoup for HTML extraction (matching the
-wallobindexer), and post_wall_observer.post_with_login() for posting
-so the formatting and posting pipeline is unified across bobclawblaw.
-"""
-
+import argparse
+import json
 import os
 import re
-import sys
+import sqlite3
 import subprocess
-import random
-from pathlib import Path
+import sys
 from datetime import datetime, timezone
-from bs4 import BeautifulSoup
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 
-_scripts_dir = Path(__file__).resolve().parent
-_project_dir = _scripts_dir.parent
-if str(_project_dir) not in sys.path:
-    sys.path.insert(0, str(_project_dir))
+# Optional (only needed if --post is used)
+try:
+    from posting_util import post_with_login  # type: ignore
+except Exception:
+    post_with_login = None
 
-from posting_util import post_with_login
 
-COOKIE = "/root/.hermes/bobclawblaw/profile/bt_cookies.txt"
+# ---- Config ----
+DB_PATH = "/root/.hermes/bobclawblaw/wall_posts.db"
 THREAD = "178336"
-DEDUP = "/tmp/buddyblocker_last"
-HEX = ["#EF3340", "#E48118", "#F8E41E",
-       "#12C167", "#158CE0", "#D021E3"]
-KB = Path("/root/.hermes/bobclawblaw/knowledge_base/wallobserver/profiles")
-PROFILE_JSON = KB / "-btc-" / "profile.json"
-LATEST_POST_ID_FILE = KB / "-btc-" / "latest_post_id.txt"
+# The author name as stored by wall_observer_indexer.py
+CHARTBUDDY_AUTHOR = "ChartBuddy"
 
-FIRECRAWL_URL = "http://localhost:3002/v1/scrape"
+DEDUP_JSON = "/tmp/buddyblocker_last_streak.json"
+HEX = ["#EF3340", "#E48118", "#F8E41E", "#12C167", "#158CE0", "#D021E3"]
 
 
-def sh(cmd):
-    """Execute shell command, return stdout."""
-    p = subprocess.run(cmd, shell=True,
-                       capture_output=True, timeout=60)
-    return p.stdout.decode(errors="replace")
-
-
-def rainbow(text, colors=HEX):
-    """Color a text string by character, outputting BB-style tags.
-
-    Format: [COLOR=#HEX]char[/COLOR]  (each char gets its #color#).
-    SMF / BobClawblaw renders these as <span> elements with color.
-    """
+def rainbow(text: str, colors: List[str] = HEX) -> str:
+    """Return BB-style color tags for BobClawblaw."""
     out = []
     for i, ch in enumerate(text):
         col = colors[i % len(colors)]
-        out.append('[COLOR={0}]{1}[/COLOR]'.format(col, ch))
-    return ''.join(out)
+        out.append(f"[COLOR={col}]{ch}[/COLOR]")
+    return "".join(out)
 
 
-def _get_current_page():
-    """Determine which page BuddyBlocker should scrape.
+def load_dedup() -> Dict[str, Any]:
+    try:
+        return json.load(open(DEDUP_JSON))
+    except Exception:
+        return {}
 
-    Uses WALLOBSERVER's latest post from the KB. Falls back to
-    a cached fallback of 714600.
+
+def save_dedup(d: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(DEDUP_JSON), exist_ok=True)
+    json.dump(d, open(DEDUP_JSON, "w"), indent=2)
+
+
+def fetch_recent_posts(limit: int = 200) -> List[Dict[str, Any]]:
+    if not os.path.exists(DB_PATH):
+        raise FileNotFoundError(f"DB not found: {DB_PATH}")
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            """SELECT msg_id, author, author_uid, page_num, subject, body
+               FROM posts
+               ORDER BY msg_id DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for (msg_id, author, author_uid, page_num, subject, body) in rows:
+            out.append(
+                {
+                    "msg_id": msg_id,
+                    "author": author,
+                    "author_uid": author_uid,
+                    "page_num": page_num,
+                    "subject": subject or "",
+                    # keep a compact excerpt for the banner
+                    "msg": (body or "").strip(),
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
+def detect_tail_streak(posts_desc: List[Dict[str, Any]], streak_threshold: int = 3) -> List[Dict[str, Any]]:
+    """Return the current tail streak of consecutive ChartBuddy posts.
+
+    posts_desc must be newest-first.
+    We count consecutive ChartBuddy posts starting at the newest post.
     """
-    # 1. Try to read the latest post ID from KB
-    try:
-        latest = int(LATEST_POST_ID_FILE.read_text().strip())
-    except Exception:
-        latest = 714600
-
-    # 2. Use the WALLOBSERVER KB directly if available
-    if PROFILE_JSON.exists():
-        try:
-            data = __import__('json').load(open(PROFILE_JSON))
-            if data.get('posts'):
-                posts = data['posts']
-                cb_posts = [p for p in posts
-                            if 'ChartBuddy' in p.get('author', '')]
-                if cb_posts:
-                    cb_posts.sort(key=lambda p: p['page'])
-                    latest_key_post = cb_posts[-1]['page']
-                    return latest_key_post
-        except Exception:
-            pass
-
-    # 3. Fallback: use page from latest post ID
-    return latest // 20 if latest > 100000 else 35800
-
-
-def fetch_firecrawl(pn):
-    """Fetch a page via firecrawl, returning HTML."""
-    try:
-        url = 'https://bitcointalk.org/index.php?topic=%s.%d' % (
-            THREAD, int(pn))
-        res = subprocess.Popen(
-            ['curl', '-s', '-X', 'POST', '-d',
-             '{"url": "%s", "formats": ["html"]}' % url,
-             FIRECRAWL_URL],
-            stdout=subprocess.PIPE, timeout=60)
-        out = res.communicate(timeout=30)[0]
-        return out.decode(errors='replace')
-    except Exception:
-        return None
-
-
-def fetch_curl_page(pn):
-    """Fetch a page via raw curl."""
-    url = 'https://bitcointalk.org/index.php?topic=%s.%d' % (
-        THREAD, int(pn))
-    return sh('curl -s -b "%s" "%s"' % (COOKIE, url))
-
-
-def extract_posts_firecrawl(html, limit=None):
-    """Extract ChatBuddy posts from firecrawl HTML."""
-    soup = BeautifulSoup(html, "html.parser")
-    post_divs = soup.find_all("div", class_="post")
-    posts = []
-    seen_keys = set()
-    cb_uid = "110685"
-
-    for post_div in post_divs:
-        text = post_div.get_text(" ")
-        text = re.sub(r"\r\n", " ", text)
-        text = " ".join(text.split())
-
-        # Check if this is a CB post (uid in profile link)
-        author_links = []
-        for a in post_div.find_all("a", href=lambda h: h and
-                                   "action=profile" in str(h)):
-            author_links.append(a)
-        for anc in post_div.parents:
-            for a in anc.find_all("a",
-                                   href=lambda h: h and
-                                   "action=profile" in str(h)):
-                if a not in author_links:
-                    author_links.append(a)
-
-        if not author_links:
-            continue
-        href = str(author_links[0].get('href', ''))
-        uid_m = re.search(r'u=(\d+)', href)
-        if not uid_m or uid_m.group(1) != cb_uid:
-            continue
-
-        author = author_links[0].get_text(strip=True) or 'ChartBuddy'
-        post_key = '%s-%d' % (author, len(posts))
-        if post_key in seen_keys:
-            continue
-        seen_keys.add(post_key)
-
-        if text and len(text) > 5:
-            posts.append({'author': author, 'msg': text})
-            if limit and len(posts) >= limit:
-                break
-
-    return posts
-
-
-def extract_posts_curl(html, limit=None):
-    """Extract ChatBuddy posts from curl HTML (legacy fallback)."""
-    blocks = re.split(r'<a name="msg[0-9]+">', html)
-    posts = []
-
-    for b in blocks[1:]:
-        if "110685" not in b.lower():
-            continue
-
-        am = re.search(
-            r'title="View the profile of ([^"]+)"', b)
-        author = am.group(1) if am else 'ChartBuddy'
-
-        idx_msg = b.find('id="message')
-        if idx_msg < 0:
-            idx_msg = b.find('id="ignoremessage')
-        idx_msg = b.find('>', idx_msg)
-        idx_end = b.find('</div>', idx_msg)
-        text = b[idx_msg + 1:idx_end]
-        text = re.sub(r'<img[^>]*>', '', text)
-        text = text.replace('<br />', ' ')
-        text = re.sub(r'<a class="ul"[^>]*>[^<]*</a>', '', text)
-        text = re.sub(r'<b>[^<]*</b>', '', text)
-        text = re.sub(r'^\s*(<br>)?\s*', '', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-
-        if text and len(text) > 5:
-            posts.append({'author': author, 'msg': text})
-            if limit and len(posts) >= limit:
-                break
-
-    posts.reverse()  # newest first
-    return posts
-
-
-def get_posts(limit=200):
-    """Fetch ChatBuddy posts, preferring firecrawl with curl fallback."""
-    page = _get_current_page()
-    print('[buddy] Trying firecrawl on page %d...' % page)
-
-    html = fetch_firecrawl(page)
-    if html:
-        posts = extract_posts_firecrawl(html, limit=limit)
-        if len(posts) > 3:
-            print('[buddy] Firecrawl: Found %d posts.' % len(posts))
-            return posts
-
-    # Fallback to raw curl
-    print('[buddy] Trying raw curl...')
-    html = fetch_curl_page(page)
-    if html:
-        posts = extract_posts_curl(html, limit=limit)
-        print('[buddy] Curl: Found %d posts.' % len(posts))
-        return posts
-
+    chain: List[Dict[str, Any]] = []
+    for p in posts_desc:
+        if p.get("author") != CHARTBUDDY_AUTHOR:
+            break
+        chain.append(p)
+    if len(chain) >= streak_threshold:
+        return chain
     return []
 
 
-def has_external_quote(msg):
-    """True if this post explicitly quotes someone other than ChatBuddy."""
-    m = re.search(r'Quote from:\s*(\w+)', msg)
-    return bool(m and m.group(1) and m.group(1) != 'ChartBuddy')
-
-
-def find_chain(posts, threshold=3):
-    """Find the longest streak of consecutive ChatBuddy posts."""
-    best = None
-    cur = []
-
-    for p in posts:
-        if (p['author'] == 'ChartBuddy'
-            and not has_external_quote(p['msg'])):
-            cur.append(p)
-            continue
-
-        if len(cur) >= threshold:
-            if best is None or len(cur) > len(best):
-                best = list(cur)
-            cur = [p]
-        else:
-            cur = [p]
-
-    # Tail
-    if len(cur) >= threshold:
-        if best is None or len(cur) > len(best):
-            best = list(cur)
-
-    return best
-
-
-def build_message(chain, streak=3):
-    """Build BBCode body for the post — single rainbow line, no self-ref."""
+def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
     n = max(4, streak)
-    # B-chain on its own, then "Buddyblocker!" with full chain below
-    header = rainbow('B' * n + 'B' + ' ' + 'Buddyblocker!')
+    header = rainbow("B" * n + "B" + " " + "Buddyblocker!")
     parts = [header]
-    if chain:
-        for p in chain:
-            parts.append(p['msg'][:120])
-    return ' '.join(parts)
+
+    for p in chain:
+        msg = p.get("msg", "")
+        # excerpt only
+        parts.append(str(msg)[:120])
+
+    return " ".join(parts)
 
 
-def post_buddy(streak=3):
-    """Post the Buddyblocker banner via the unified pipeline."""
-    body = build_message([], streak)
-    subj = '[B-B-B-B Buddyblocker!]!!!'
-    return post_with_login(THREAD, subj, body, board="57")
+def maybe_post(chain: List[Dict[str, Any]], streak: int) -> None:
+    if post_with_login is None:
+        raise RuntimeError("--post requested but posting_util.post_with_login is unavailable")
+
+    body = build_message(chain, streak)
+    subj = "[B-B-B-B Buddyblocker!]!!!"
+
+    # Keep the board wiring consistent with original buddyblocker.
+    post_with_login(THREAD, subj, body, board="57")
 
 
-def main():
-    post_flag = '--post' in sys.argv
-    dry = '--dry' in sys.argv
-    streak = 3
-    for a in sys.argv[1:]:
-        if a.startswith('--streak'):
-            parts = a.split('=', 1)
-            streak = int(parts[1]) if len(parts) > 1 else 3
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--streak", type=int, default=3)
+    ap.add_argument("--limit", type=int, default=200)
+    ap.add_argument(
+        "--no-post",
+        action="store_true",
+        help="Detection-only. Never post to the forum.",
+    )
+    ap.add_argument(
+        "--dry",
+        action="store_true",
+        help="Alias for --no-post; write bbcode to /tmp instead of posting.",
+    )
+    args = ap.parse_args()
 
-    # Dedup (1h threshold)
-    last = 0.0
-    try:
-        last = float(open(DEDUP).read().strip())
-    except Exception:
-        pass
-    now = datetime.now(timezone.utc).timestamp()
-    age = now - last
-    if 0 < age < 3600:
-        print('[buddy] Skip: posted %.0f sec ago.' % age)
-        sys.exit(0)
-
-    print('[buddy] Fetching posts...')
-    posts = get_posts(limit=200)
-    print('[buddy] Found %d posts.' % len(posts))
-
+    # Read recent posts and detect current tail streak.
+    posts = fetch_recent_posts(limit=args.limit)
     if not posts:
-        print('[buddy] 0 posts.')
+        print("[buddy] No posts in DB yet.")
         sys.exit(0)
 
-    chain = find_chain(posts, threshold=streak)
+    chain = detect_tail_streak(posts, streak_threshold=args.streak)
     if not chain:
-        print('[buddy] No chain (min=%d).' % streak)
+        print(f"[buddy] No buddychain tail streak (need >= {args.streak}).")
         sys.exit(0)
 
-    count = len(chain)
-    print('[buddy] Found a chain of %d!' % count)
-    for i, p in enumerate(chain):
-        print('  [%d] %s: %s' %
-              (i + 1, p['author'], p['msg'][:120]))
+    streak = len(chain)
+    top = chain[0]
+    top_msg_id = top.get("msg_id")
 
-    if post_flag:
-        post_buddy(streak=count)
-    elif dry:
-        body = build_message(chain, count)
-        with open('/tmp/buddyblocker_out.html', 'w') as fh:
-            fh.write(body)
-        print('[buddy] Saved to /tmp/buddyblocker_out.html')
-    else:
-        post_buddy(streak=count)
+    # Dedup: trigger only once per top_msg_id.
+    dedup = load_dedup()
+    if dedup.get("top_msg_id") == top_msg_id:
+        print(f"[buddy] Buddychain already triggered for top msg_id={top_msg_id}.")
+        sys.exit(0)
 
-    sys.exit(0)
+    now = datetime.now(timezone.utc).isoformat()
+    dedup.update({"top_msg_id": top_msg_id, "streak": streak, "triggered_at": now})
+    save_dedup(dedup)
+
+    msg = build_message(chain, streak)
+    print(f"[buddy] Buddychain detected! streak={streak} top_msg_id={top_msg_id}")
+
+    # Print excerpt details.
+    for i, p in enumerate(chain, 1):
+        author = p.get("author")
+        subject = (p.get("subject") or "").replace("\n", " ")
+        print(f"  [{i}/{streak}] msg_id={p.get('msg_id')} author={author} subject={subject[:60]}")
+
+    # Output message text
+    out_path = "/tmp/buddyblocker_out.bbcode"
+    if args.no_post or args.dry:
+        Path(out_path).write_text(msg)
+        print(f"[buddy] No-post mode. Wrote: {out_path}")
+        return
+
+    maybe_post(chain, streak)
+    print("[buddy] Posted.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
