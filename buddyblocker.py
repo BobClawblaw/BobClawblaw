@@ -111,13 +111,10 @@ def get_tail_chain(posts_desc: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
     # Header format requested:
-    #   B-B-B-B-B-B-BBuddy-Blocker!!!
-    # i.e. dashes between the B's, but no dash between the last B and Buddy-Blocker!!!
+    #   B-B-B-...-B-Buddy-Blocker!!!
+    # i.e. dashes between the B's, and a dash between the last B and Buddy-Blocker.
     n = max(4, streak)
-    if n == 1:
-        header = "BBuddy-Blocker!!!"
-    else:
-        header = ("-".join(["B"] * (n - 1))) + "-B" + "Buddy-Blocker!!!"
+    header = ("-".join(["B"] * n)) + "-Buddy-Blocker!!!"
 
     parts = [header]
     for p in chain:
