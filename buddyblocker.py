@@ -130,15 +130,14 @@ def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
 
 
 
-def maybe_post(chain: List[Dict[str, Any]], streak: int) -> None:
+def maybe_post(chain: List[Dict[str, Any]], streak: int) -> bool:
     if post_with_login is None:
         raise RuntimeError("--post requested but posting_util.post_with_login is unavailable")
 
     body = build_message(chain, streak)
     subj = "[B-B-B-B Buddyblocker!]!!!"
-
     # Keep the board wiring consistent with original buddyblocker.
-    post_with_login(THREAD, subj, body, board="57")
+    return post_with_login(THREAD, subj, body, board="57")
 
 
 def main() -> None:
@@ -167,6 +166,11 @@ def main() -> None:
         "--ignore-dedup",
         action="store_true",
         help="Ignore the dedup file for the current top_msg_id (for testing).",
+    )
+    ap.add_argument(
+        "--no-reindex-after-post",
+        action="store_true",
+        help="Do not run wall_observer_indexer.py immediately after posting (testing).",
     )
     args = ap.parse_args()
 
@@ -240,8 +244,21 @@ def main() -> None:
         print(f"[buddy] No-post mode. Wrote: {out_path}")
         sys.exit(0)
 
-    maybe_post(chain, streak_len)
-    print("[buddy] Posted.")
+    ok = maybe_post(chain, streak_len)
+    if ok:
+        print("[buddy] Posted.")
+        if not args.no_reindex_after_post:
+            try:
+                subprocess.run(
+                    ["python3", "/root/BobClawblaw/wall_observer_indexer.py"],
+                    check=False,
+                    timeout=600,
+                )
+                print("[buddy] Reindexed wall observer after posting.")
+            except Exception as e:
+                print(f"[buddy] Reindex after post failed: {e}")
+    else:
+        print("[buddy] Post did not succeed.")
 
 
 
