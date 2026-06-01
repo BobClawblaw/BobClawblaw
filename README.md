@@ -47,7 +47,7 @@ Behavior when posting is enabled:
 - It detects the current tail streak of consecutive `ChartBuddy` posts from the newest DB entries.
 - Default rule: it never posts when `streak == 4`.
 - For every consecutive post beyond that (i.e., when `streak > 4`), it attempts a post with 33% probability.
-- If the 33% roll fails, it skips posting; if the ChartBuddy streak keeps growing, the next run will include one more `B` in the rainbow header because the header length tracks the streak length.
+- If the 33% roll fails, it skips posting and prints a message for us (re-run with `--post` enabled if you were running in detection-only mode). If the ChartBuddy streak keeps growing, the next run will include one more `B` in the rainbow header because the header length tracks the streak length.
 
 Index
 - `python3 wall_observer_indexer.py`
@@ -66,11 +66,10 @@ This project is run by Hermes Agent as scheduled jobs (not a single monolithic s
   - Model: `Jarcgon/Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-uncenfull:latest`
 
 - DB-first indexing + buddychain detection (automated)
-  - Hermes runs `/root/.hermes/scripts/wall_observer_indexer_cron.sh` every 30 minutes (`*/30 * * * *`).
+  - Hermes runs `/root/.hermes/scripts/wall_observer_indexer_cron.sh` every 30 minutes (`*/30 * * *`).
   - That cron script runs, in order:
     1) `wall_observer_indexer.py --prune-missing --prune-anchors 10`
-    2) `buddyblocker.py --streak 4` (detection-only by default)
-
+    2) `buddyblocker.py --streak 4 --post` (still gated by streak + the 33% roll)
 Hermes job wiring (cron config) lives under `/root/.hermes/cron/jobs.json`.
 
 ## Hardware / system specs (this environment)
