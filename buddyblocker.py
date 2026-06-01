@@ -160,6 +160,16 @@ def main() -> None:
         action="store_true",
         help="Alias for --no-post; write bbcode to /tmp instead of posting.",
     )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Force posting even if the 33% roll fails (for testing).",
+    )
+    ap.add_argument(
+        "--ignore-dedup",
+        action="store_true",
+        help="Ignore the dedup file for the current top_msg_id (for testing).",
+    )
     args = ap.parse_args()
 
     # Read recent posts and detect current tail streak.
@@ -197,11 +207,14 @@ def main() -> None:
 
     # Dedup: roll once per newest msg_id.
     dedup = load_dedup()
-    if dedup.get("top_msg_id") == top_msg_id:
+    if (not args.ignore_dedup) and dedup.get("top_msg_id") == top_msg_id:
         print(f"[buddy] Already rolled for top_msg_id={top_msg_id}; skipping.")
         sys.exit(0)
 
-    fired = random.random() < P_FIRE
+    if args.force:
+        fired = True
+    else:
+        fired = random.random() < P_FIRE
 
     now = datetime.now(timezone.utc).isoformat()
     dedup.update(
