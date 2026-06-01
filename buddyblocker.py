@@ -120,7 +120,8 @@ def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
     #   B-B-B-...-B-Buddy-Blocker!!!
     # i.e. dashes between the B's, and a dash between the last B and Buddy-Blocker.
     n = max(4, streak)
-    header_raw = ("-".join(["B"] * n)) + "-Buddy-Blocker!!!"
+    header_text = ("-".join(["B"] * n)) + "-Buddy-Blocker!!!"
+    header_raw = f"[ {header_text} ]"
     header = rainbow(header_raw)
 
     parts = [header]
