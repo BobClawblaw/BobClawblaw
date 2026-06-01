@@ -40,3 +40,15 @@
 ## Deployment & Maintenance
 - **Repository:** Maintained in the `BobClawblaw` GitHub repository.
 - **Requirements:** Run with `python3 newspost.py`. Ensure Firecrawl, Ollama, and SearXNG are running before execution.
+
+### Output + posting flags
+- `--out-dir <path>`: where to write digests (default: `/root/.hermes/saved_files`).
+- `--post`: submit the most recently generated BBCode to Bitcointalk.
+- `--with-footer` / `--footer`: include the “[i]Spotted by BobClawblaw …[/i]” footer.
+
+### Posting implementation (single source of truth)
+- Posting uses the repo script: `/root/BobClawblaw/post_wall_observer.py`.
+- Hermes’ copy at `/root/.hermes/bobclawblaw/post_wall_observer.py` is a thin wrapper that forwards to the repo script.
+
+### Symbol handling
+- `post_wall_observer.py` maps `₿ -> B` before ASCII filtering, so the posted content stays readable on Bitcointalk.

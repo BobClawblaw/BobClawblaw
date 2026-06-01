@@ -24,6 +24,7 @@ import subprocess
 from urllib.parse import urlparse
 from dateutil.parser import parse as dateutil_parse
 import warnings
+import time
 
 # --- Constants & Config ---
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
@@ -243,6 +244,35 @@ def get_historical_ct_time(hours_ago: int) -> str:
 # ---------------------------------------------------------------------------
 #  Content cleanup
 # ---------------------------------------------------------------------------
+
+def request_get_retry(url: str, timeout: int = 15, retries: int = 3, backoff_s: float = 1.5, headers: dict | None = None):
+    last_err = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, timeout=timeout, headers=headers)
+            if r.status_code == 200:
+                return r
+        except Exception as e:
+            last_err = e
+        if attempt < retries - 1:
+            time.sleep(backoff_s ** attempt)
+    return None
+
+def request_post_retry(url: str, json_body: dict | None = None, data_body: dict | None = None, timeout: int = 15, retries: int = 3, backoff_s: float = 1.5, headers: dict | None = None):
+    last_err = None
+    for attempt in range(retries):
+        try:
+            if json_body is not None:
+                r = requests.post(url, json=json_body, timeout=timeout, headers=headers)
+            else:
+                r = requests.post(url, data=data_body, timeout=timeout, headers=headers)
+            if r.status_code == 200:
+                return r
+        except Exception as e:
+            last_err = e
+        if attempt < retries - 1:
+            time.sleep(backoff_s ** attempt)
+    return None
 def clean_text(raw_text: str) -> str:
     t = raw_text
     t = re.sub(r'\[Skip to (?:navigation|main content|right column|footer|menu|search)\]', '', t)
@@ -452,8 +482,11 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
             domain = c["domain"]
             source_counts[domain] = source_counts.get(domain, 0) + 1
 
-    # Cross-source low-threshold dedup: after the main selection, group similar titles
-    # into clusters using a lower threshold (are_similar_cross) to catch same-story-different-source.
+    # Cross-source low-threshold dedup: group similar titles using a lower threshold
+    # to catch same-story-different-source.
+    # If clustering would shrink below target_count, we keep the original selection
+    # to preserve output size (better a few duplicates than a short digest).
+    orig_selected = list(selected)
     if len(selected) >= 3:
         clusters = []
         for c in selected:
@@ -465,9 +498,48 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
                     break
             if not placed:
                 clusters.append([c])
-        selected = [max(cluster, key=lambda x: x["hotness"]) for cluster in clusters]
 
-    return selected
+        clustered = [max(cluster, key=lambda x: x["hotness"]) for cluster in clusters]
+        if len(clustered) >= target_count:
+            selected = clustered[:target_count]
+        else:
+            selected = orig_selected
+
+    # Refill pass: clustering can shrink the list, so we attempt to refill.
+    # If the strict similarity gate blocks too many additions, we relax it in a second pass.
+    if len(selected) < target_count:
+        selected_urls = {s["url"] for s in selected}
+        domain_counts = {}
+        for s in selected:
+            domain_counts[s["domain"]] = domain_counts.get(s["domain"], 0) + 1
+
+        refill_modes = [
+            ("strict", lambda c, s: are_similar(c["scraped_title"], s["scraped_title"])),
+            ("relaxed", lambda c, s: are_similar_cross(c["scraped_title"], s["scraped_title"])),
+        ]
+
+        for _, is_dup in refill_modes:
+            if len(selected) >= target_count:
+                break
+            for c in sorted_candidates:
+                if len(selected) >= target_count:
+                    break
+                if c["url"] in selected_urls:
+                    continue
+
+                domain = c["domain"]
+                # Slightly relax cap after refill, but keep diversity.
+                if domain_counts.get(domain, 0) >= (max_per_source + 1):
+                    continue
+
+                if any(is_dup(c, s) for s in selected):
+                    continue
+
+                selected.append(c)
+                selected_urls.add(c["url"])
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
+
+    return selected[:target_count]
 
 # ---------------------------------------------------------------------------
 #  Market Data
@@ -480,26 +552,32 @@ def get_btc_market_data() -> dict:
         "include_24hr_change=true&include_market_cap=true"
     )
     try:
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
+        r = request_get_retry(url, timeout=15, retries=3)
+        if r is not None:
             d = r.json()["bitcoin"]
-            return {"price": d["usd"], "change_24h": d["usd_24h_change"],
-                    "mcap": d.get("usd_market_cap", 0)}
+            return {
+                "price": d["usd"],
+                "change_24h": d["usd_24h_change"],
+                "mcap": d.get("usd_market_cap", 0),
+            }
     except Exception as e:
         print(f"CoinGecko API Error: {e}")
     # Coinpaprika fallback
     try:
-        r = requests.get("https://api.coinpaprika.com/v1/tickers/btc-bitcoin", timeout=15)
-        if r.status_code == 200:
+        r = request_get_retry("https://api.coinpaprika.com/v1/tickers/btc-bitcoin", timeout=15, retries=3)
+        if r is not None:
             u = r.json()["quotes"]["USD"]
-            return {"price": u["price"], "change_24h": u["percent_change_24h"],
-                    "mcap": u["market_cap"]}
+            return {
+                "price": u["price"],
+                "change_24h": u["percent_change_24h"],
+                "mcap": u["market_cap"],
+            }
     except Exception as e:
         print(f"Coinpaprika API Error: {e}")
     # Coinbase fallback (rate-limit free public endpoint for price stability)
     try:
-        r = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=10)
-        if r.status_code == 200:
+        r = request_get_retry("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=10, retries=3)
+        if r is not None:
             price = float(r.json()["data"]["amount"])
             return {"price": price, "change_24h": 0.0, "mcap": price * 19700000.0}
     except Exception as e:
@@ -510,8 +588,8 @@ def get_btc_history() -> dict:
     """Fetch 3d, 7d, 30d BTC performance from CoinGecko."""
     try:
         url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=30&interval=daily"
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
+        r = request_get_retry(url, timeout=15, retries=3)
+        if r is not None:
             prices = [p[1] for p in r.json()['prices']]
             current = prices[-1]
             return {
@@ -528,8 +606,8 @@ def get_macro_context() -> dict:
     """Fetch Fear & Greed index and calculate 7-day sentiment momentum."""
     try:
         # Fetch last 7 days of Fear & Greed index
-        r = requests.get("https://api.alternative.me/fng/?limit=7", timeout=10)
-        if r.status_code == 200:
+        r = request_get_retry("https://api.alternative.me/fng/?limit=7", timeout=10, retries=3)
+        if r is not None:
             data = r.json().get('data', [])
             if data:
                 today_val = int(data[0]['value'])
@@ -554,8 +632,8 @@ def get_macro_context() -> dict:
 def _fetch_exchange(name, url_fn):
     """Fetch single exchange price from Binance, Kraken, Bitstamp, Coinbase, Gemini."""
     try:
-        r = requests.get(url_fn(), timeout=8)
-        if r.status_code != 200:
+        r = request_get_retry(url_fn(), timeout=8, retries=2)
+        if r is None:
             return 0.0
         d = r.json()
         if name == "coinbase":
@@ -1141,8 +1219,12 @@ def fetch_direct_fallback(url: str) -> str:
     # --...
 def run_pipeline():
     today = datetime.datetime.now(pytz.utc).astimezone(CT).strftime("%Y-%m-%d")
-    base = "/root/.hermes/bobclawblaw"
-    digest_dir = os.path.join(base, "digests")
+    out_base = "/root/.hermes/saved_files"
+    if "--out-dir" in sys.argv:
+        i = sys.argv.index("--out-dir")
+        if i + 1 < len(sys.argv):
+            out_base = sys.argv[i + 1]
+    digest_dir = os.path.join(out_base, "digests")
     os.makedirs(digest_dir, exist_ok=True)
 
     md_path = os.path.join(digest_dir, f"newspost-{__version__}-{today}.md")
@@ -1242,10 +1324,10 @@ def run_pipeline():
     idx_cnt = 0
     MAX_IDX = 20
 
-    while idx < len(all_hits) and len(all_candidates) < 15:
+    while idx < len(all_hits) and len(all_candidates) < 30:
         # Prevent runaway crawling of too many index/hub pages if we already have enough candidates
-        if idx_cnt >= 40 and len(all_candidates) >= 12:
-            print("[-] Crawled 40+ index pages and reached 12+ candidates. Stopping crawl.")
+        if idx_cnt >= 40 and len(all_candidates) >= 20:
+            print("[-] Crawled 40+ index pages and reached 20+ candidates. Stopping crawl.")
             break
         url = strip_query_string(all_hits[idx]['url'])
         u = url
@@ -1597,8 +1679,10 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
     bb = markdown_to_bbcode(body)
     bb_wrapped = bb  # Teletype [tt] tags removed — preserves newlines for proper BBCode rendering on Bitcointalk
 
-    _ftr = f"[i][size=8pt]Spotted by BobClawblaw {__version__} ({OLLAMA_MODEL})[/size][/i]"
-    bb_wrapped += "\n" + _ftr + "\n"
+    enable_footer = ("--with-footer" in sys.argv) or ("--footer" in sys.argv)
+    if enable_footer:
+        _ftr = f"[i][size=8pt]Spotted by BobClawblaw {__version__} ({OLLAMA_MODEL})[/size][/i]"
+        bb_wrapped += "\n" + _ftr + "\n"
 
     with open(bb_path, "w", encoding="utf-8") as f:
         f.write(bb_wrapped)
@@ -1607,8 +1691,12 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
     post = "--post" in sys.argv
     if post and "--post" in sys.argv:
         sub = f"BobClawblaw's Wall Observer Digest — {today} ({edition})"
-        cmd = f'python3 /root/.hermes/bobclawblaw/post_wall_observer.py "{sub}" "{bb_path}"'
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        post_script = "/root/BobClawblaw/post_wall_observer.py"
+        r = subprocess.run(
+            ["python3", post_script, sub, bb_path],
+            capture_output=True,
+            text=True,
+        )
         print(r.stdout)
         if r.returncode:
             print(f"[!] {r.stderr}")
