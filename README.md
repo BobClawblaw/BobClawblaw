@@ -49,3 +49,30 @@ Index
 
 ## Documentation
 - More detail: `docs/newspost_documentation.md`
+
+## Ollama + Hermes orchestration
+
+This project is run by Hermes Agent as scheduled jobs (not a single monolithic script).
+
+- Digest generation + optional posting
+  - You run `python3 newspost.py` directly when you want to generate a digest.
+  - The summarizer uses local Ollama at http://127.0.0.1:11434
+  - Model: `Jarcgon/Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-uncenfull:latest`
+
+- DB-first indexing + buddychain detection (automated)
+  - Hermes runs `/root/.hermes/scripts/wall_observer_indexer_cron.sh` every 30 minutes (`*/30 * * * *`).
+  - That cron script runs, in order:
+    1) `wall_observer_indexer.py --prune-missing --prune-anchors 10`
+    2) `buddyblocker.py --streak 4` (detection-only by default)
+
+Hermes job wiring (cron config) lives under `/root/.hermes/cron/jobs.json`.
+
+## Hardware / system specs (this environment)
+
+- Host / kernel: Linux gx10 6.17.0-1018-nvidia (Ubuntu 24.04.4 LTS)
+- CPU: 20x ARM (aarch64) cores (Cortex-X925 / Cortex-A725), ~3.9GHz max
+- RAM: 121GiB (108GiB used, ~1.9GiB free)
+- Swap: 15GiB (8.5GiB used)
+- Storage: root filesystem on /dev/nvme0n1p2, 1.8T total, 555G used
+- GPU: NVIDIA GB10 (UUID GPU-a901e64d-4198-a5ea-5c00-f3bce5dd70e8)
+- Python: Python 3.12.3
