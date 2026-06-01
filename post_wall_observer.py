@@ -56,9 +56,13 @@ def clean_subject(subject):
 
 def clean_message(message):
     """Remove non-printable, non-ASCII from the message body (BB tags only need ASCII)."""
-    return ''.join(c for c in message
-                   if 32 <= ord(c) <= 126
-                   or c in ('\n', '\r', '\t'))
+    # Bitcointalk tends to mangle symbols outside ASCII; keep it readable.
+    message = message.replace('₿', 'B')
+    return ''.join(
+        c
+        for c in message
+        if 32 <= ord(c) <= 126 or c in ('\n', '\r', '\t')
+    )
 
 
 def main(argv=None):
