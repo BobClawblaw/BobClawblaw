@@ -25,6 +25,40 @@ from urllib.parse import urlparse
 from dateutil.parser import parse as dateutil_parse
 import warnings
 import time
+from functools import lru_cache
+
+# ---------------------------------------------------------------------------
+# RSS Source Registry (single source of truth)
+# ---------------------------------------------------------------------------
+# Keys are canonical domains (no scheme, no trailing slash). Values are lists
+# of feed URLs to try in order.
+RSS_FEED_REGISTRY = {
+    # Existing sources
+    "insights.glassnode.com": ["https://insights.glassnode.com/rss/"],
+    "blog.bitmex.com": ["https://blog.bitmex.com/category/research/feed/"],
+    "cointelegraph.com": ["https://cointelegraph.com/rss"],
+    "coindesk.com": ["https://www.coindesk.com/arc/outboundfeeds/rss/"],
+    "bitcoinmagazine.com": ["https://bitcoinmagazine.com/.rss/full/"],
+    "news.bitcoin.com": ["https://news.bitcoin.com/feed/"],
+    "theblock.co": ["https://www.theblock.co/rss.xml"],
+    "decrypt.co": ["https://decrypt.co/feed"],
+    "cryptoslate.com": ["https://cryptoslate.com/feed/"],
+
+    # New sources suggested/added for higher coverage
+    "blockworks.co": ["https://blockworks.co/feed/"],
+    "protos.com": ["https://protos.com/feed/"],
+    "messari.io": ["https://messari.io/rss"],
+    "chainalysis.com": ["https://www.chainalysis.com/feed/"],
+    "forklog.com": ["https://forklog.com/feed/"],
+    "themerkle.com": ["https://themerkle.com/feed/"],
+    "bitcoinist.com": ["https://bitcoinist.com/feed/"],
+}
+
+# Hard cap per feed to keep crawl bounded.
+RSS_MAX_LINKS_PER_DOMAIN = 25
+
+# Convenience set/tuple for domain checks.
+RSS_KNOWN_DOMAINS = tuple(RSS_FEED_REGISTRY.keys())
 
 # --- Constants & Config ---
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
@@ -908,90 +942,114 @@ def compute_hotness(art: dict, keep_keywords: list, discard_keywords: list) -> f
 #  Crawl & Validate Helpers
 # ---------------------------------------------------------------------------
 def fetch_rss_articles(domain: str) -> list:
-    """Fetch recent article links from RSS feed for a domain."""
+    """Fetch recent article links from RSS feeds registered for a domain."""
+
+    def _normalize(d: str) -> str:
+        d = (d or "").strip().lower()
+        if d.startswith("www."):
+            d = d[4:]
+        return d
+
+    domain = _normalize(domain)
+
     import xml.etree.ElementTree as ET
-    
-    rss_map = {
-        "insights.glassnode.com": "https://insights.glassnode.com/rss/",
-        "blog.bitmex.com": "https://blog.bitmex.com/category/research/feed/",
-        "cointelegraph.com": "https://cointelegraph.com/rss",
-        "coindesk.com": "https://www.coindesk.com/arc/outboundfeeds/rss/",
-        "bitcoinmagazine.com": "https://bitcoinmagazine.com/.rss/full/",
-        "news.bitcoin.com": "https://news.bitcoin.com/feed/",
-        "theblock.co": "https://www.theblock.co/rss.xml",
-        "decrypt.co": "https://decrypt.co/feed",
-        "cryptoslate.com": "https://cryptoslate.com/feed/",
-    }
-    
-    feed_url = rss_map.get(domain)
-    if not feed_url:
-        return []
-        
-    print(f"[-] Fetching RSS feed for {domain}...")
-    try:
-        r = requests.get(feed_url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
-        if r.status_code != 200:
-            print(f"[!] RSS HTTP Error {r.status_code} for {domain}")
-            return []
-            
-        text = r.text
-        links = []
-        
-        # 1. Try ET parsing
-        try:
-            root = ET.fromstring(r.content)
-            # Find in RSS format
-            for item in root.findall(".//item"):
-                link_node = item.find("link")
-                if link_node is not None and link_node.text:
-                    links.append(link_node.text.strip())
-            # Find in Atom format if empty
-            if not links:
-                for entry in root.findall(".//{http://www.w3.org/2005/Atom}entry"):
-                    link_node = entry.find("{http://www.w3.org/2005/Atom}link")
-                    if link_node is not None and link_node.attrib.get("href"):
-                        links.append(link_node.attrib.get("href").strip())
-        except Exception as et_err:
-            # Fall back to regex if XML parse fails
-            pass
-            
-        # 2. Regex fallback if XML parsing failed or returned no links
-        if not links:
-            matches = re.findall(r'<link[^>]*>(.*?)</link>', text, re.IGNORECASE | re.DOTALL)
-            for m in matches:
-                m_clean = m.strip()
-                if m_clean.startswith("http"):
-                    links.append(m_clean)
-            
-            href_matches = re.findall(r'<link\s+[^>]*href=["\'](https?://[^"\']+)["\']', text, re.IGNORECASE)
-            for hm in href_matches:
-                links.append(hm.strip())
-                
-        valid_links = []
-        seen_links = set()
-        for link in links:
-            if link in seen_links:
-                continue
-            seen_links.add(link)
-            if "http" in link:
-                valid_links.append({"url": link})
-                
-        print(f"    ✓ RSS returned {len(valid_links)} links for {domain}")
-        return valid_links
-    except Exception as e:
-        print(f"[!] RSS processing failed for {domain}: {e}")
-        return []
+
+    @lru_cache(maxsize=64)
+    def _fetch_all_links(domain_norm: str) -> tuple:
+        feed_urls = RSS_FEED_REGISTRY.get(domain_norm)
+        if not feed_urls:
+            return tuple()
+
+        for feed_url in feed_urls:
+            print(f"[-] Fetching RSS feed for {domain_norm} ({feed_url})...")
+            try:
+                r = requests.get(
+                    feed_url,
+                    timeout=15,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    },
+                )
+                if r.status_code != 200:
+                    print(f"[!] RSS HTTP Error {r.status_code} for {domain_norm}")
+                    continue
+
+                text = r.text
+                links: list[str] = []
+
+                # 1. Try XML parse (RSS/Atom)
+                try:
+                    root = ET.fromstring(r.content)
+                    for item in root.findall(".//item"):
+                        link_node = item.find("link")
+                        if link_node is not None and link_node.text:
+                            links.append(link_node.text.strip())
+
+                    # Atom format
+                    if not links:
+                        for entry in root.findall(".//{http://www.w3.org/2005/Atom}entry"):
+                            link_node = entry.find("{http://www.w3.org/2005/Atom}link")
+                            if link_node is not None:
+                                href = link_node.attrib.get("href")
+                                if href:
+                                    links.append(href.strip())
+                except Exception:
+                    pass
+
+                # 2. Regex fallback
+                if not links:
+                    matches = re.findall(
+                        r"<link[^>]*>(.*?)</link>", text, re.IGNORECASE | re.DOTALL
+                    )
+                    for m in matches:
+                        m_clean = m.strip()
+                        if m_clean.startswith("http"):
+                            links.append(m_clean)
+
+                    href_matches = re.findall(
+                        r"<link\s+[^>]*href=[\"\'](https?://[^\"\']+)[\"\']",
+                        text,
+                        re.IGNORECASE,
+                    )
+                    for hm in href_matches:
+                        links.append(hm.strip())
+
+                # Canonicalize + hard cap
+                valid = []
+                seen = set()
+                for link in links:
+                    if not link or "http" not in link:
+                        continue
+                    if link in seen:
+                        continue
+                    seen.add(link)
+                    valid.append(link)
+                    if len(valid) >= RSS_MAX_LINKS_PER_DOMAIN:
+                        break
+
+                if valid:
+                    print(f"    ✓ RSS returned {len(valid)} links for {domain_norm}")
+                    return tuple(valid)
+
+            except Exception as e:
+                print(f"[!] RSS processing failed for {domain_norm}: {e}")
+
+        return tuple()
+
+    link_tuples = _fetch_all_links(domain)
+    return [{"url": u} for u in link_tuples]
+
 
 def search_searxng(query: str, time_range: str = "day") -> list:
     """Perform POST request on SearXNG with date restrictions."""
     payload = {"q": query, "format": "json"}
     if time_range:
         payload["time_range"] = time_range
-        
+
     try:
         r = requests.post(SEARXNG_URL, data=payload, timeout=30)
         if r.status_code == 200:
-            return r.json().get('results', [])
+            return r.json().get("results", [])
     except Exception as e:
         print(f"[!] SearXNG search failed for '{query}': {e}")
     return []
@@ -1006,7 +1064,7 @@ def is_article_link(url: str, parent_url: str) -> bool:
             return False
         if "author" in path or "category" in path or "tag" in path or "search" in path or "/quotes/" in path or "/calculator/" in path or "/video/" in path or "/videos/" in path:
             return False
-        if any(domain in p.netloc.lower() for domain in ["cointelegraph.com", "coindesk.com", "bitcoinmagazine.com", "news.bitcoin.com", "theblock.co", "decrypt.co", "cryptoslate.com", "insights.glassnode.com", "blog.bitmex.com"]):
+        if any(domain in p.netloc.lower() for domain in RSS_KNOWN_DOMAINS):
             if len(path.strip("/")) > 5:
                 return True
         # Generic date-in-path article detection (handles 247wallst, cnbc, and others with date subdirectories in path)
@@ -1218,7 +1276,12 @@ def fetch_direct_fallback(url: str) -> str:
     # v26: output files named v26-{date}.md / v26-{date}.bbcode.txt
     # --...
 def run_pipeline():
-    today = datetime.datetime.now(pytz.utc).astimezone(CT).strftime("%Y-%m-%d")
+    run_dt = datetime.datetime.now(pytz.utc).astimezone(CT)
+    today = run_dt.strftime("%Y-%m-%d")
+    # Suffix so multiple runs per day don't overwrite.
+    # Example: 2026-06-01_030512PMCT
+    run_suffix = run_dt.strftime("%I%M%S%p").upper()
+    file_stamp = f"{today}_{run_suffix}CT"
     out_base = "/root/.hermes/saved_files"
     if "--out-dir" in sys.argv:
         i = sys.argv.index("--out-dir")
@@ -1227,8 +1290,8 @@ def run_pipeline():
     digest_dir = os.path.join(out_base, "digests")
     os.makedirs(digest_dir, exist_ok=True)
 
-    md_path = os.path.join(digest_dir, f"newspost-{__version__}-{today}.md")
-    bb_path = os.path.join(digest_dir, f"newspost-{__version__}-{today}.bbcode.txt")
+    md_path = os.path.join(digest_dir, f"newspost-{__version__}-{file_stamp}.md")
+    bb_path = os.path.join(digest_dir, f"newspost-{__version__}-{file_stamp}.bbcode.txt")
 
     print(f"--- Starting {__version__} pipeline (model={OLLAMA_MODEL}, CT timezone) ---")
 
@@ -1251,20 +1314,15 @@ def run_pipeline():
         'site:reuters.com bitcoin',
         'site:decrypt.co bitcoin',
         'site:cryptoslate.com bitcoin',
+        'site:blockworks.co bitcoin',
+        'site:protos.com bitcoin',
+        'site:messari.io bitcoin',
+        'site:chainalysis.com bitcoin',
+        'site:forklog.com bitcoin',
+        'site:themerkle.com bitcoin',
+        'site:bitcoinist.com bitcoin',
         '"bitcoin news"',
     ]
-    
-    rss_map = {
-        "insights.glassnode.com": "https://insights.glassnode.com/rss/",
-        "blog.bitmex.com": "https://blog.bitmex.com/category/research/feed/",
-        "cointelegraph.com": "https://cointelegraph.com/rss",
-        "coindesk.com": "https://www.coindesk.com/arc/outboundfeeds/rss/",
-        "bitcoinmagazine.com": "https://bitcoinmagazine.com/.rss/full/",
-        "news.bitcoin.com": "https://news.bitcoin.com/feed/",
-        "theblock.co": "https://www.theblock.co/rss.xml",
-        "decrypt.co": "https://decrypt.co/feed",
-        "cryptoslate.com": "https://cryptoslate.com/feed/",
-    }
 
     all_hits = []
     
@@ -1275,7 +1333,7 @@ def run_pipeline():
             domain = domain_match.group(1) if domain_match else None
             
             used_rss = False
-            if domain and domain in rss_map:
+            if domain and domain in RSS_FEED_REGISTRY:
                 rss_links = fetch_rss_articles(domain)
                 if rss_links:
                     hits.extend(rss_links)
