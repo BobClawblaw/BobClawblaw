@@ -22,6 +22,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import random
 
 # Optional (only needed if --post is used)
 try:
@@ -93,20 +94,19 @@ def fetch_recent_posts(limit: int = 200) -> List[Dict[str, Any]]:
         conn.close()
 
 
-def detect_tail_streak(posts_desc: List[Dict[str, Any]], streak_threshold: int = 3) -> List[Dict[str, Any]]:
+def get_tail_chain(posts_desc: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return the current tail streak of consecutive ChartBuddy posts.
 
     posts_desc must be newest-first.
     We count consecutive ChartBuddy posts starting at the newest post.
+    This always returns the tail chain length (possibly empty).
     """
     chain: List[Dict[str, Any]] = []
     for p in posts_desc:
         if p.get("author") != CHARTBUDDY_AUTHOR:
             break
         chain.append(p)
-    if len(chain) >= streak_threshold:
-        return chain
-    return []
+    return chain
 
 
 def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
@@ -135,7 +135,10 @@ def maybe_post(chain: List[Dict[str, Any]], streak: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--streak", type=int, default=3)
+    # After this many consecutive ChartBuddy posts in the *tail*, we start
+    # applying the rarity rule.
+    # Default: after 4 consecutive posts, each successive post has a 33% chance.
+    ap.add_argument("--streak", type=int, default=4)
     ap.add_argument("--limit", type=int, default=200)
     ap.add_argument(
         "--no-post",
@@ -155,43 +158,70 @@ def main() -> None:
         print("[buddy] No posts in DB yet.")
         sys.exit(0)
 
-    chain = detect_tail_streak(posts, streak_threshold=args.streak)
-    if not chain:
-        print(f"[buddy] No buddychain tail streak (need >= {args.streak}).")
+    chain = get_tail_chain(posts)  # newest-first tail chain
+    streak_len = len(chain)
+    if streak_len == 0:
+        print("[buddy] Tail streak is 0.")
         sys.exit(0)
 
-    streak = len(chain)
-    top = chain[0]
-    top_msg_id = top.get("msg_id")
+    top_msg_id = chain[0].get("msg_id")
+    chance_start = args.streak
 
-    # Dedup: trigger only once per top_msg_id.
-    dedup = load_dedup()
-    if dedup.get("top_msg_id") == top_msg_id:
-        print(f"[buddy] Buddychain already triggered for top msg_id={top_msg_id}.")
-        sys.exit(0)
-
-    now = datetime.now(timezone.utc).isoformat()
-    dedup.update({"top_msg_id": top_msg_id, "streak": streak, "triggered_at": now})
-    save_dedup(dedup)
-
-    msg = build_message(chain, streak)
-    print(f"[buddy] Buddychain detected! streak={streak} top_msg_id={top_msg_id}")
+    print(f"[buddy] Tail streak detected: streak_len={streak_len} top_msg_id={top_msg_id}")
 
     # Print excerpt details.
     for i, p in enumerate(chain, 1):
         author = p.get("author")
         subject = (p.get("subject") or "").replace("\n", " ")
-        print(f"  [{i}/{streak}] msg_id={p.get('msg_id')} author={author} subject={subject[:60]}")
+        print(f"  [{i}/{streak_len}] msg_id={p.get('msg_id')} author={author} subject={subject[:60]}")
+
+    # New rule:
+    # - No posting at exactly `chance_start`.
+    # - For every successive consecutive post beyond `chance_start`,
+    #   post with 33% probability.
+    if streak_len <= chance_start:
+        print(f"[buddy] No firing: need > {chance_start} (33% rule starts after {chance_start}).")
+        sys.exit(0)
+
+    P_FIRE = 0.33
+
+    # Dedup: roll once per newest msg_id.
+    dedup = load_dedup()
+    if dedup.get("top_msg_id") == top_msg_id:
+        print(f"[buddy] Already rolled for top_msg_id={top_msg_id}; skipping.")
+        sys.exit(0)
+
+    fired = random.random() < P_FIRE
+
+    now = datetime.now(timezone.utc).isoformat()
+    dedup.update(
+        {
+            "top_msg_id": top_msg_id,
+            "streak": streak_len,
+            "triggered_at": now,
+            "fired": fired,
+            "p_fire": P_FIRE,
+            "chance_start": chance_start,
+        }
+    )
+    save_dedup(dedup)
+
+    if not fired:
+        print(f"[buddy] Buddychain would fire, but 33% roll failed (p={P_FIRE}).")
+        sys.exit(0)
+
+    msg = build_message(chain, streak_len)
 
     # Output message text
     out_path = "/tmp/buddyblocker_out.bbcode"
     if args.no_post or args.dry:
         Path(out_path).write_text(msg)
         print(f"[buddy] No-post mode. Wrote: {out_path}")
-        return
+        sys.exit(0)
 
-    maybe_post(chain, streak)
+    maybe_post(chain, streak_len)
     print("[buddy] Posted.")
+
 
 
 if __name__ == "__main__":
