@@ -43,6 +43,12 @@ Buddyblocker
 - `python3 buddyblocker.py` (detection-only)
 - `python3 buddyblocker.py --post`
 
+Behavior when posting is enabled:
+- It detects the current tail streak of consecutive `ChartBuddy` posts from the newest DB entries.
+- Default rule: it never posts when `streak == 4`.
+- For every consecutive post beyond that (i.e., when `streak > 4`), it attempts a post with 33% probability.
+- If the 33% roll fails, it skips posting; if the ChartBuddy streak keeps growing, the next run will include one more `B` in the rainbow header because the header length tracks the streak length.
+
 Index
 - `python3 wall_observer_indexer.py`
 - `python3 wall_observer_indexer.py --prune-missing --prune-anchors 10`

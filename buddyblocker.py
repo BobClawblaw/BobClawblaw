@@ -7,6 +7,17 @@ posts, and finds the longest *current tail streak* of consecutive ChartBuddy
 posts.
 
 Default behavior: detection-only (no posting).
+
+If you enable posting (--post):
+- It posts only when the current tail streak of consecutive ChartBuddy posts is
+  strictly greater than `--streak` (default: 4).
+- For every consecutive ChartBuddy post beyond that threshold, it attempts a
+  post with 33% probability.
+- If the 33% roll fails, it skips posting for now.
+- The BBCode header it would post uses `streak_len` to set the number of `B`s,
+  so if ChartBuddy keeps posting and the streak grows, the next run’s header
+  grows by 1 more `B`.
+
 Use --post to enable posting (requires posting_util.py + credentials).
 """
 
@@ -119,6 +130,7 @@ def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
     # Header format requested:
     #   B-B-B-...-B-Buddy-Blocker!!!
     # i.e. dashes between the B's, and a dash between the last B and Buddy-Blocker.
+    # Header grows with the current tail streak length.
     n = max(4, streak)
     header_text = ("-".join(["B"] * n)) + "-Buddy-Blocker!!!"
     header_raw = f"[ {header_text} ]"
@@ -145,7 +157,12 @@ def main() -> None:
     # After this many consecutive ChartBuddy posts in the *tail*, we start
     # applying the rarity rule.
     # Default: after 4 consecutive posts, each successive post has a 33% chance.
-    ap.add_argument("--streak", type=int, default=4)
+    ap.add_argument(
+        "--streak",
+        type=int,
+        default=4,
+        help="Tail streak threshold. No posting at exactly this value; attempt posting with 33% when streak > this.",
+    )
     ap.add_argument("--limit", type=int, default=200)
     ap.add_argument(
         "--no-post",
@@ -188,6 +205,9 @@ def main() -> None:
 
     top_msg_id = chain[0].get("msg_id")
     chance_start = args.streak
+
+    b_count_if_posted = max(4, streak_len)
+    print(f"[buddy] If it posts now, header B-count would be: {b_count_if_posted}")
 
     print(f"[buddy] Tail streak detected: streak_len={streak_len} top_msg_id={top_msg_id}")
 
@@ -233,6 +253,7 @@ def main() -> None:
 
     if not fired:
         print(f"[buddy] Buddychain would fire, but 33% roll failed (p={P_FIRE}).")
+        print("[buddy] No post this run. If ChartBuddy keeps posting and the streak grows, next run’s header will have one more 'B' (it tracks streak_len).")
         sys.exit(0)
 
     msg = build_message(chain, streak_len)
