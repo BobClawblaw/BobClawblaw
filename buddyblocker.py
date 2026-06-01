@@ -125,7 +125,8 @@ def build_message(chain: List[Dict[str, Any]], streak: int) -> str:
     header = rainbow(header_raw)
 
     # Flat post: don't quote/copy ChartBuddy content.
-    return header + "\n\nBuddychain noticed. No reposts."
+    # NO extra lines in the output body.
+    return header
 
 
 
