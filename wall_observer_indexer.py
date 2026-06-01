@@ -19,8 +19,8 @@ import re
 import json
 import sqlite3
 import subprocess
+import time
 from typing import List, Tuple, Optional
-
 from bs4 import BeautifulSoup
 
 DB_PATH = "/root/.hermes/bobclawblaw/wall_posts.db"
@@ -30,8 +30,13 @@ STATE_PATH = "/root/.hermes/bobclawblaw/knowledge_base/idx.json"
 
 TOPIC = 178336
 BT_UID = 3749923
-
 WINDOW = 100
+
+# Network/rate-limit stability defaults
+REQUEST_TIMEOUT_S = 60
+MAX_RETRIES = 6
+RETRY_BACKOFF_S = 1.5
+MIN_SLEEP_BETWEEN_REQUESTS_S = 0.25
 
 
 def msg_ids_on_page(html: str) -> List[int]:
@@ -40,23 +45,72 @@ def msg_ids_on_page(html: str) -> List[int]:
 
 
 
-def curl_to_stdout(url: str) -> bytes:
-    # Bitcointalk is happier with POST in some environments.
-    # If this ever fails, switch back to GET.
-    res = subprocess.run(
-        ["curl", "-s", "-X", "POST", "-b", COOKIE, url],
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
-    return res.stdout
+def _extract_http_code(stdout: bytes) -> tuple[bytes, Optional[int]]:
+    """curl -w '\n%{http_code}' makes the response end with a 3-digit code."""
+    m = re.search(rb"\n(\d{3})$", stdout)
+    if not m:
+        return stdout, None
+    code = int(m.group(1).decode("ascii", errors="ignore"))
+    body = stdout[: m.start()]
+    return body, code
+
+
+def _is_rate_limited(html_bytes: bytes, http_code: Optional[int]) -> bool:
+    if http_code == 503:
+        return True
+    head = html_bytes[:20000].decode("utf-8", errors="ignore").lower()
+    return "too fast / overloaded (503)" in head or "503 via master" in head
+
+
+def fetch_html(url: str, *, retries: int = MAX_RETRIES) -> bytes:
+    """Fetch page with retries/backoff on 503/rate-limit.
+
+    Returns response body bytes.
+    """
+    last_err: Optional[str] = None
+    for attempt in range(retries + 1):
+        if attempt > 0:
+            time.sleep(min(30.0, RETRY_BACKOFF_S**attempt))
+
+        res = subprocess.run(
+            [
+                "curl",
+                "-sS",
+                "-X",
+                "POST",
+                "-b",
+                COOKIE,
+                url,
+                "-w",
+                "\n%{http_code}",
+            ],
+            capture_output=True,
+            timeout=REQUEST_TIMEOUT_S,
+            check=False,
+        )
+
+        body, code = _extract_http_code(res.stdout)
+        if code == 200 and len(body) > 200:
+            time.sleep(MIN_SLEEP_BETWEEN_REQUESTS_S)
+            return body
+
+        if _is_rate_limited(body, code):
+            last_err = f"rate-limited (http_code={code})"
+        elif code is None:
+            last_err = "missing http_code"
+        else:
+            last_err = f"unexpected http_code={code}"
+
+        time.sleep(MIN_SLEEP_BETWEEN_REQUESTS_S)
+
+    raise RuntimeError(f"fetch_html failed for {url}: {last_err}")
 
 
 def topic_anchors(mode: str = "stdout") -> List[int]:
     # On SMF topic pages, pagination anchors use topic=TOPIC.<n>
     # where <n> is the page start index.
     url = f"https://bitcointalk.org/index.php?topic={TOPIC}"
-    raw = curl_to_stdout(url)
+    raw = fetch_html(url)
     html = raw.decode("utf-8", errors="ignore")
 
     anchors = set()
@@ -71,7 +125,8 @@ def topic_anchors(mode: str = "stdout") -> List[int]:
         if m:
             anchors.add(int(m.group(1)))
 
-    print(f"[DIAG {TOPIC}] anchors={len(anchors)} (mode={mode})")
+    if mode != "quiet":
+        print(f"[DIAG {TOPIC}] anchors={len(anchors)} (mode={mode})")
     return sorted(anchors)
 
 
@@ -238,7 +293,11 @@ def run(
     inserted = 0
     for anc in window:
         url = f"https://bitcointalk.org/index.php?topic={TOPIC}.{int(anc)}"
-        html = curl_to_stdout(url).decode("utf-8", errors="ignore")
+        try:
+            html = fetch_html(url).decode("utf-8", errors="ignore")
+        except Exception as e:
+            print(f"[warn] fetch failed for topic anchor {anc}: {e}")
+            continue
 
         rows = parse_posts(html, page_num=int(anc))
         for row in rows:
@@ -258,25 +317,35 @@ def run(
     if prune_missing and prune_window:
         print(f"-- pruning missing posts in anchors {min(prune_window)}..{max(prune_window)} (count={len(prune_window)}) --")
         present_ids = set()
+        prune_ok = True
         for anc in prune_window:
             url = f"https://bitcointalk.org/index.php?topic={TOPIC}.{int(anc)}"
-            html = curl_to_stdout(url).decode("utf-8", errors="ignore")
+            try:
+                html = fetch_html(url).decode("utf-8", errors="ignore")
+            except Exception as e:
+                print(f"[warn] prune fetch failed for anchor {anc}: {e}")
+                prune_ok = False
+                break
             present_ids.update(msg_ids_on_page(html))
 
-        cand = conn.execute(
-            f"SELECT msg_id FROM posts WHERE page_num IN ({','.join(['?'] * len(prune_window))})",
-            tuple(int(x) for x in prune_window),
-        ).fetchall()
-
-        to_delete = [r[0] for r in cand if r[0] not in present_ids]
-
-        if to_delete:
-            conn.executemany("DELETE FROM posts WHERE msg_id=?", [(mid,) for mid in to_delete])
-            conn.executemany("DELETE FROM _seen WHERE msg_id=?", [(mid,) for mid in to_delete])
-            conn.commit()
-            print(f"[prune] Deleted {len(to_delete)} missing posts")
+        if not prune_ok:
+            # Stability rule: never prune based on incomplete/failed fetches.
+            print("[prune] Skipped prune (incomplete fetch results)")
         else:
-            print("[prune] No missing posts detected in prune window")
+            cand = conn.execute(
+                f"SELECT msg_id FROM posts WHERE page_num IN ({','.join(['?'] * len(prune_window))})",
+                tuple(int(x) for x in prune_window),
+            ).fetchall()
+
+            to_delete = [r[0] for r in cand if r[0] not in present_ids]
+
+            if to_delete:
+                conn.executemany("DELETE FROM posts WHERE msg_id=?", [(mid,) for mid in to_delete])
+                conn.executemany("DELETE FROM _seen WHERE msg_id=?", [(mid,) for mid in to_delete])
+                conn.commit()
+                print(f"[prune] Deleted {len(to_delete)} missing posts")
+            else:
+                print("[prune] No missing posts detected in prune window")
 
     state = json.load(open(STATE_PATH)) if os.path.exists(STATE_PATH) else {}
     state["last_anchor"] = anchors[-1]
