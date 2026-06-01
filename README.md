@@ -42,6 +42,8 @@ Digest
 Buddyblocker
 - `python3 buddyblocker.py` (detection-only)
 - `python3 buddyblocker.py --post`
+- `python3 buddyblocker.py --post --force` (bypass 33% roll; still uses dedup gates)
+- `python3 buddyblocker.py --force-post` (bypass 33% roll + dedup gates; will attempt a real forum post for the current detected streak)
 
 Behavior when posting is enabled:
 - It detects the current tail streak of consecutive `ChartBuddy` posts from the newest DB entries.
