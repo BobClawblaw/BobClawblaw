@@ -259,7 +259,7 @@ def main() -> None:
     if not fired:
         print(f"[buddy] Buddychain would fire, but 33% roll failed (p={P_FIRE}).")
         print("[buddy] No post this run. If ChartBuddy keeps posting and the streak grows, next run’s header will have one more 'B' (it tracks streak_len).")
-        print("[buddy] Maybe we should consider posting — re-run with --post enabled.")
+        print("[buddy] Maybe we should consider posting — this run failed the 33% roll. Next cron tick will try again; for a forced test run, use --post --force.")
         sys.exit(0)
 
     msg = build_message(chain, streak_len)

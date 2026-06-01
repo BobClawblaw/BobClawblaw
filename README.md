@@ -47,7 +47,7 @@ Behavior when posting is enabled:
 - It detects the current tail streak of consecutive `ChartBuddy` posts from the newest DB entries.
 - Default rule: it never posts when `streak == 4`.
 - For every consecutive post beyond that (i.e., when `streak > 4`), it attempts a post with 33% probability.
-- If the 33% roll fails, it skips posting and prints a message for us (re-run with `--post` enabled if you were running in detection-only mode). If the ChartBuddy streak keeps growing, the next run will include one more `B` in the rainbow header because the header length tracks the streak length.
+- If the 33% roll fails, it skips posting and prints a message for us (it will try again on the next run; for a forced test run, use `--post --force`). If the ChartBuddy streak keeps growing, the next run will include one more `B` in the rainbow header because the header length tracks the streak length.
 
 Index
 - `python3 wall_observer_indexer.py`
