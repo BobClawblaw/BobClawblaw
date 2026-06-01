@@ -13,6 +13,7 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
+import argparse
 import os
 import re
 import json
@@ -31,6 +32,12 @@ TOPIC = 178336
 BT_UID = 3749923
 
 WINDOW = 100
+
+
+def msg_ids_on_page(html: str) -> List[int]:
+    """Extract msg ids from raw topic page HTML (author/subject independent)."""
+    return [int(m.group(1)) for m in re.finditer(r'<a\s+name="msg(\d+)">', html)]
+
 
 
 def curl_to_stdout(url: str) -> bytes:
@@ -188,7 +195,11 @@ def rebuild(conn: sqlite3.Connection) -> None:
             json.dump({"name": author, "uid": uid, "count": cnt}, f, indent=2)
 
 
-def run(max_anchors: Optional[int] = None) -> None:
+def run(
+    max_anchors: Optional[int] = None,
+    prune_missing: bool = False,
+    prune_anchors: Optional[int] = None,
+) -> None:
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS posts (
@@ -216,6 +227,12 @@ def run(max_anchors: Optional[int] = None) -> None:
     else:
         window = anchors[-max_anchors:]
 
+    prune_window = window
+    if prune_missing and prune_anchors is not None:
+        prune_window = anchors[-prune_anchors:]
+
+    prune_window = sorted(set(prune_window))
+
     print(f"-- processing anchors {min(window)}..{max(window)} (count={len(window)}) --")
 
     inserted = 0
@@ -238,6 +255,29 @@ def run(max_anchors: Optional[int] = None) -> None:
             conn.execute("INSERT INTO _seen (msg_id) VALUES (?)", (msg_id,))
             inserted += 1
 
+    if prune_missing and prune_window:
+        print(f"-- pruning missing posts in anchors {min(prune_window)}..{max(prune_window)} (count={len(prune_window)}) --")
+        present_ids = set()
+        for anc in prune_window:
+            url = f"https://bitcointalk.org/index.php?topic={TOPIC}.{int(anc)}"
+            html = curl_to_stdout(url).decode("utf-8", errors="ignore")
+            present_ids.update(msg_ids_on_page(html))
+
+        cand = conn.execute(
+            f"SELECT msg_id FROM posts WHERE page_num IN ({','.join(['?'] * len(prune_window))})",
+            tuple(int(x) for x in prune_window),
+        ).fetchall()
+
+        to_delete = [r[0] for r in cand if r[0] not in present_ids]
+
+        if to_delete:
+            conn.executemany("DELETE FROM posts WHERE msg_id=?", [(mid,) for mid in to_delete])
+            conn.executemany("DELETE FROM _seen WHERE msg_id=?", [(mid,) for mid in to_delete])
+            conn.commit()
+            print(f"[prune] Deleted {len(to_delete)} missing posts")
+        else:
+            print("[prune] No missing posts detected in prune window")
+
     state = json.load(open(STATE_PATH)) if os.path.exists(STATE_PATH) else {}
     state["last_anchor"] = anchors[-1]
     state["last"] = "now"
@@ -259,4 +299,27 @@ def run(max_anchors: Optional[int] = None) -> None:
 
 
 if __name__ == "__main__":
-    run()
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--max-anchors",
+        type=int,
+        default=None,
+        help="Limit topic anchors processed (saves time during maintenance).",
+    )
+    ap.add_argument(
+        "--prune-missing",
+        action="store_true",
+        help="Check recent anchors for missing msg ids and delete them from the DB.",
+    )
+    ap.add_argument(
+        "--prune-anchors",
+        type=int,
+        default=10,
+        help="How many most-recent anchors to check when using --prune-missing.",
+    )
+    args = ap.parse_args()
+    run(
+        max_anchors=args.max_anchors,
+        prune_missing=args.prune_missing,
+        prune_anchors=args.prune_anchors,
+    )
