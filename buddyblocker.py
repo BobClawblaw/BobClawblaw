@@ -259,7 +259,7 @@ def main() -> None:
     if not fired:
         print(f"[buddy] Buddychain would fire, but 33% roll failed (p={P_FIRE}).")
         print("[buddy] No post this run. If ChartBuddy keeps posting and the streak grows, next run’s header will have one more 'B' (it tracks streak_len).")
-        print("[buddy] Maybe we should consider posting if we're seeing this?")
+        print("[buddy] Maybe we should consider posting — re-run with --post enabled.")
         sys.exit(0)
 
     msg = build_message(chain, streak_len)
