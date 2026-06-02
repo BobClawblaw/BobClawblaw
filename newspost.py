@@ -398,13 +398,43 @@ def are_similar(title1: str, title2: str) -> bool:
             return True
             
     # B. Strategy / MicroStrategy / Saylor pausing/buying bonds instead of BTC
+    # plus the common “Strategy sold/offloaded X BTC” same-story mirror across sources.
     strategy_names = {'strategy', 'microstrategy', 'saylor'}
-    strategy_actions = {'pause', 'pauses', 'paused', 'stop', 'stops', 'stopped', 'retire', 'retires', 'retired', 'bond', 'bonds', 'debt', 'convertible'}
+
+    # Older heuristic: pausing/stopping/bonds/debt framing.
+    strategy_actions = {
+        'pause', 'pauses', 'paused', 'stop', 'stops', 'stopped',
+        'retire', 'retires', 'retired',
+        'bond', 'bonds', 'debt', 'convertible'
+    }
+
+    # Newer heuristic: selling/offloading BTC (covers “sold/offloads/disposal/sale/meme” mirrors).
+    strategy_sale_actions = {
+        'sell', 'sells', 'sold', 'selling', 'sale',
+        'disposal', 'disposals',
+        'offload', 'offloads', 'offloaded', 'offloading',
+        'shed', 'sheds', 'shedded',
+        'offered'
+    }
+
     if any(n in words1 for n in strategy_names) and any(n in words2 for n in strategy_names):
-        has_a1 = any(a in words1 for a in strategy_actions)
-        has_a2 = any(a in words2 for a in strategy_actions)
-        if has_a1 and has_a2:
+        has_bond_pause_1 = any(a in words1 for a in strategy_actions)
+        has_bond_pause_2 = any(a in words2 for a in strategy_actions)
+        if has_bond_pause_1 and has_bond_pause_2:
             return True
+
+        has_sale_1 = any(a in words1 for a in strategy_sale_actions)
+        has_sale_2 = any(a in words2 for a in strategy_sale_actions)
+        if has_sale_1 and has_sale_2:
+            # Strongest signal: same BTC amount (e.g., “32 BTC”).
+            numbers1 = {w for w in words1 if w.isdigit() or (len(w) > 1 and w[:-1].isdigit() and w[-1] in ('m', 'b', 'k'))}
+            numbers2 = {w for w in words2 if w.isdigit() or (len(w) > 1 and w[:-1].isdigit() and w[-1] in ('m', 'b', 'k'))}
+            if numbers1.intersection(numbers2):
+                return True
+
+            # Fallback: both explicitly say it’s the “first” sell/sale in the same framing.
+            if 'first' in words1 and 'first' in words2:
+                return True
 
     # C. BlackRock selling $1B / shedding $1B
     if 'blackrock' in words1 and 'blackrock' in words2:
@@ -445,26 +475,55 @@ def are_similar(title1: str, title2: str) -> bool:
     return False
 
 def are_similar_cross(title1: str, title2: str) -> bool:
-    """Stricter cross-source similarity: catches same-story-different-source pairs
-    that the main are_similar() misses (e.g., 'Texas Appoints CleanSpark Exec, Bitcoin Miner CEO
-    to Strategic Bitcoin Reserve Committee' vs 'Texas Forms Bitcoin Reserve Advisory Committee' —
-    ratio 0.51, below 0.65 threshold)."""
+    """Cross-source similarity used during relaxed refill.
+
+    Important: this must still catch common “same story, different outlet” mirrors
+    (like Strategy selling the same BTC amount) — otherwise the relaxed refill
+    can re-introduce duplicates.
+    """
     import difflib
+
     t1 = title1.lower().strip()
     t2 = title2.lower().strip()
 
-    # Direct sequence ratio — low threshold for catch-all
+    # Domain heuristics first (cheap + high precision)
+    t1_clean = re.sub(r'[^\w\s]', ' ', t1)
+    t2_clean = re.sub(r'[^\w\s]', ' ', t2)
+    words1 = set(t1_clean.split())
+    words2 = set(t2_clean.split())
+
+    strategy_names = {'strategy', 'microstrategy', 'saylor'}
+    strategy_sale_actions = {
+        'sell', 'sells', 'sold', 'selling', 'sale',
+        'disposal', 'disposals',
+        'offload', 'offloads', 'offloaded', 'offloading',
+        'shed', 'sheds', 'shedded',
+        'offered'
+    }
+
+    if any(n in words1 for n in strategy_names) and any(n in words2 for n in strategy_names):
+        has_sale_1 = any(a in words1 for a in strategy_sale_actions)
+        has_sale_2 = any(a in words2 for a in strategy_sale_actions)
+        if has_sale_1 and has_sale_2:
+            numbers1 = {w for w in words1 if w.isdigit() or (len(w) > 1 and w[:-1].isdigit() and w[-1] in ('m', 'b', 'k'))}
+            numbers2 = {w for w in words2 if w.isdigit() or (len(w) > 1 and w[:-1].isdigit() and w[-1] in ('m', 'b', 'k'))}
+            if numbers1.intersection(numbers2):
+                return True
+            # fallback: same “first” framing
+            if 'first' in words1 and 'first' in words2:
+                return True
+
+    # Sequence ratio fallback (catch-all)
     ratio = difflib.SequenceMatcher(None, t1, t2).ratio()
     if ratio > 0.40:
-        # Validate: at least 2 shared content words (excluding common stop words)
         stop = {'bitcoin', 'btc', 'crypto', 'to', 'the', 'a', 'in', 'of', 'and', 'on'}
         w1 = set(t1.split()) - stop
         w2 = set(t2.split()) - stop
         if len(w1.intersection(w2)) >= 2:
             return True
-        # High ratio alone is enough for short titles
         if ratio > 0.55:
             return True
+
     return False
 
 def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> list:
