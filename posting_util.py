@@ -48,21 +48,82 @@ def is_logged_in():
 
 
 def perform_login(creds):
-    login_url = f"https://bitcointalk.org/index.php?action=login;ccode={creds['ccode']}"
+    # creds['ccode'] is not consistently shaped across runs.
+    # - sometimes it's just the ccode token
+    # - sometimes it's a full captcha-bypass URL (action=login;ccode=...)
+    ccode_val = creds['ccode']
+    if isinstance(ccode_val, str) and 'action=login' in ccode_val:
+        login_url = ccode_val
+    else:
+        login_url = f"https://bitcointalk.org/index.php?action=login;ccode={ccode_val}"
+
+    login2_url = login_url
+    # Most SMF login pages use action=login2;... for the actual POST.
+    login2_url = re.sub(r'action=login;', 'action=login2;', login2_url)
+
+    # Load login page to ensure we have a fresh sessionid in COOKIE_PATH.
     _run_cmd(f'curl -s -c {COOKIE_PATH} "{login_url}"')
     page = _run_cmd(f'curl -s -b {COOKIE_PATH} "{login_url}"')
-    m = re.search(r'name="formhash" value="([^"]+)"', page)
-    if not m:
-        print("FAILED: Could not find formhash on login page")
+
+    # Extract cookielength if present; SMF uses it in the login form.
+    cookielength_m = re.search(r'name="cookielength" value="([^"]+)"', page)
+    cookielength = cookielength_m.group(1) if cookielength_m else '60'
+
+    # Extract sessionid from cookie jar.
+    try:
+        cookie_text = open(COOKIE_PATH, 'r', encoding='utf-8', errors='ignore').read()
+    except Exception as e:
+        print(f"FAILED: Could not read cookie jar for sessionid: {e}")
         return False
-    formhash = m.group(1)
-    post_data = f"user={creds['username']}&passwrd={creds['password']}&formhash={formhash}"
-    out = _run_cmd(
-        f'curl -s -b {COOKIE_PATH} -c {COOKIE_PATH} -d "{post_data}" "https://bitcointalk.org/index.php?action=login"'
+
+    # Netscape cookie format: ...\tsessionid\t<value>
+    sess_m = re.search(r'\tsessionid\t([^\t\r\n]+)', cookie_text)
+    sessionid = sess_m.group(1) if sess_m else None
+    if not sessionid:
+        print("FAILED: Could not find sessionid cookie; cannot compute hash_passwrd")
+        return False
+
+    # Newer SMF login uses hash_passwrd (client-side) not formhash.
+    # hash_passwrd = sha1( sha1(lower(username)+password) + sessionid )
+    import hashlib
+
+    inner = hashlib.sha1((creds['username'].lower() + creds['password']).encode('utf-8')).hexdigest()
+    hash_passwrd = hashlib.sha1((inner + sessionid).encode('utf-8')).hexdigest()
+
+    # Try login2 via POST.
+    import urllib.parse
+
+    post_data = (
+        f"user={urllib.parse.quote_plus(creds['username'])}"
+        f"&passwrd={urllib.parse.quote_plus(creds['password'])}"
+        f"&hash_passwrd={hash_passwrd}"
+        f"&totp_value="
+        f"&cookielength={cookielength}"
     )
-    if "Logout" in out or "Welcome" in out:
+
+    out = _run_cmd(
+        f"curl -s -b {COOKIE_PATH} -c {COOKIE_PATH} -d \"{post_data}\" '{login2_url}'"
+    )
+
+    # Validate via profile (Logout link should be present when authenticated).
+    profile = _run_cmd(f'curl -s -b {COOKIE_PATH} "https://bitcointalk.org/index.php?action=profile"')
+    if "Logout" in profile or "Welcome" in profile:
         print("Login successful. Cookies saved.")
         return True
+
+    # Backwards compatibility: if formhash exists, try the old flow too.
+    m = re.search(r'name="formhash" value="([^"]+)"', page)
+    if m:
+        formhash = m.group(1)
+        post_data_old = f"user={creds['username']}&passwrd={creds['password']}&formhash={formhash}"
+        _run_cmd(
+            f"curl -s -b {COOKIE_PATH} -c {COOKIE_PATH} -d \"{post_data_old}\" 'https://bitcointalk.org/index.php?action=login'"
+        )
+        profile2 = _run_cmd(f'curl -s -b {COOKIE_PATH} "https://bitcointalk.org/index.php?action=profile"')
+        if "Logout" in profile2 or "Welcome" in profile2:
+            print("Login successful (legacy formhash). Cookies saved.")
+            return True
+
     print("Login failed.")
     return False
 
