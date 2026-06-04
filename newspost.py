@@ -1573,13 +1573,21 @@ def run_pipeline():
                 if raw_content.count(w) >= 1:
                     trigger_word = w
                     break
-            if trigger_word and alt_c > btc_c * 0.3:
-                print(f"    ! Altcoin/Shitcoin blacklist triggered (found '{trigger_word}' >= 2 times and altcoin keywords constitute a significant portion), skipping.")
+            if trigger_word:
+                print(f"    ! Strict blacklist triggered (found '{trigger_word}' in extracted content), skipping.")
                 continue
 
             md = sd.get('metadata', {})
             title = md.get('title') or md.get('og:title') or ""
-            
+
+            # Also block on title mention (separate from body text), because
+            # Firecrawl can truncate body content but still populate metadata titles.
+            title_l = str(title).lower()
+            for w in strict_blacklist:
+                if w in title_l:
+                    print(f"    ! Strict blacklist triggered via title (found '{w}'), skipping.")
+                    continue
+
             # Extract published date using robust extraction
             pub = extract_date_from_html_or_markdown(url, content, md)
             
