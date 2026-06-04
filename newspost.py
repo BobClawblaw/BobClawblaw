@@ -530,8 +530,8 @@ def are_similar_cross(title1: str, title2: str) -> bool:
 def story_fingerprint(cand: dict) -> str:
     """Fingerprint stable key facts for cross-source dedup.
 
-    Conservative: only triggers for Strategy/MicroStrategy sold/offloaded BTC
-    class stories. Otherwise falls back to a compact domain+title fingerprint.
+    Tuned (wider): triggers for Strategy/MicroStrategy sold/offloaded BTC stories.
+    Otherwise falls back to a compact domain+title fingerprint.
     """
 
     title = (cand.get('scraped_title') or '').lower()
@@ -541,11 +541,15 @@ def story_fingerprint(cand: dict) -> str:
 
     # Strategy/MicroStrategy sold/offloaded X BTC
     if any(x in blob for x in ['strategy', 'microstrategy', 'mstr', 'saylor']) and ('btc' in blob or 'bitcoin' in blob):
-        if any(x in blob for x in ['sold', 'sell', 'offload', 'disposal', 'shed', 'sale']):
+        sale_words = ['sold', 'sell', 'offload', 'disposal', 'shed', 'sale', 'liquid', 'dividend', 'preferred']
+        if any(x in blob for x in sale_words):
+            # Prefer explicit “32 bitcoin” style amounts.
             m = re.search(r'(\d+)\s*(btc|bitcoin)', blob)
             amt = m.group(1) if m else ''
+            # Keep “first … since …” framing if present.
             first_tag = 'first' if 'first' in blob else ''
-            return f"strategy_sale|amt:{amt or '?'}|{first_tag}".strip('|')
+            since_tag = 'since' if 'since' in blob else ''
+            return f"strategy_sale|amt:{amt or '?'}|{first_tag}{since_tag}".strip('|')
 
     dom = urlparse(url).netloc if url else ''
     t_clean = re.sub(r'[^a-z0-9]+', ' ', title).strip()
