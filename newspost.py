@@ -1869,8 +1869,52 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
         f.write(bb_wrapped)
     print(f"[-] BBCode: {bb_path}")
 
+    # --- Anti-repeat (24h) gate ---
+    # Prevent posting the same story block twice within 24 hours.
+    # We approximate this by comparing the set of story URLs in the generated digest
+    # against the most recent saved digest files.
+    def load_recent_digest_story_urls(digest_dir: str, max_files: int = 12):
+        import glob
+        out = []
+        md_files = sorted(glob.glob(os.path.join(digest_dir, 'newspost-*.md')), key=os.path.getmtime, reverse=True)
+        for mf in md_files[:max_files]:
+            try:
+                txt = open(mf, 'r', encoding='utf-8', errors='replace').read().lower()
+                urls = re.findall(r'http[s]?://[^\s\)\]\}]+', txt)
+                # normalize by stripping queries
+                urls = sorted({strip_query_string(u) for u in urls})
+                if urls:
+                    out.append((os.path.getmtime(mf), urls))
+            except Exception:
+                continue
+        return out
+
+    def digest_story_key(stories_list):
+        # stories_list items have url
+        urls = [strip_query_string(s.get('url','')) for s in (stories_list or []) if s.get('url')]
+        urls = sorted(set(urls))
+        return urls
+
     post = "--post" in sys.argv
     if post and "--post" in sys.argv:
+        recent = load_recent_digest_story_urls(digest_dir)
+        now_ts = datetime.datetime.now(pytz.utc).timestamp()
+        my_urls = digest_story_key(stories)
+        my_set = set(my_urls)
+
+        # If a recent digest within 24h has the same story URL set (exact match), skip posting.
+        # This is strict enough to avoid accidental false positives.
+        repeated = False
+        for ts, urls in recent:
+            if (now_ts - ts) <= 24 * 3600:
+                if set(urls) == my_set:
+                    repeated = True
+                    print(f"[ANTI-REPEAT] Skipping post: identical story URL set found within 24h in digest at ts={ts}.")
+                    break
+
+        if repeated:
+            sys.exit(0)
+
         sub = f"BobClawblaw's Wall Observer Digest — {today} ({edition})"
         post_script = "/root/BobClawblaw/post_wall_observer.py"
         r = subprocess.run(
