@@ -1510,7 +1510,10 @@ def run_pipeline():
             strict_blacklist = [
                 "aave", "ethereum", "solana", "defi", "liquid staking", "babylon", 
                 "wbtc", "tbtc", "erc-20", "erc20", "cross-chain", "smart contract", 
-                "yield farming", "stablecoin", "stablecoins", "fairshake", "super pac"
+                "yield farming", "stablecoin", "stablecoins", "fairshake", "super pac",
+
+                # Hard block: don't report Peter Schiff
+                "peter schiff", "schiff",
             ]
             trigger_word = None
             for w in strict_blacklist:
