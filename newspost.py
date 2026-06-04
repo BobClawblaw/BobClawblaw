@@ -526,24 +526,65 @@ def are_similar_cross(title1: str, title2: str) -> bool:
 
     return False
 
+
+def story_fingerprint(cand: dict) -> str:
+    """Fingerprint stable key facts for cross-source dedup.
+
+    Conservative: only triggers for Strategy/MicroStrategy sold/offloaded BTC
+    class stories. Otherwise falls back to a compact domain+title fingerprint.
+    """
+
+    title = (cand.get('scraped_title') or '').lower()
+    url = (cand.get('url') or '').lower()
+    content = (cand.get('content_raw') or '').lower()
+    blob = title + ' ' + url + ' ' + content
+
+    # Strategy/MicroStrategy sold/offloaded X BTC
+    if any(x in blob for x in ['strategy', 'microstrategy', 'mstr', 'saylor']) and ('btc' in blob or 'bitcoin' in blob):
+        if any(x in blob for x in ['sold', 'sell', 'offload', 'disposal', 'shed', 'sale']):
+            m = re.search(r'(\d+)\s*(btc|bitcoin)', blob)
+            amt = m.group(1) if m else ''
+            first_tag = 'first' if 'first' in blob else ''
+            return f"strategy_sale|amt:{amt or '?'}|{first_tag}".strip('|')
+
+    dom = urlparse(url).netloc if url else ''
+    t_clean = re.sub(r'[^a-z0-9]+', ' ', title).strip()
+    t_short = ' '.join(t_clean.split()[:10])
+    return f"default|{dom}|{t_short}"
+
+
 def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> list:
-    """Select exactly target_count stories with no duplicates and strict source caps."""
-    # Filter out candidates with a hotness score of 0.0 (meaning they were filtered out by date)
+    """Select exactly target_count stories with no duplicates and strict source caps.
+
+    Enhanced: dedupe across sources using story_fingerprint().
+    """
     valid_candidates = [c for c in candidates.values() if c["hotness"] > 0.0]
     sorted_candidates = sorted(valid_candidates, key=lambda x: x["hotness"], reverse=True)
+
     selected = []
+    selected_fps = set()
     source_counts = {}
-    
+
+    def fp_of(c):
+        try:
+            return story_fingerprint(c)
+        except Exception:
+            # Never block selection due to fingerprint failure.
+            return f"fallback|{c.get('url','')}|{c.get('scraped_title','')}"
+
     # First pass: Respect source diversity and similarity filter
     for c in sorted_candidates:
         if len(selected) >= target_count:
             break
-            
+
         domain = c["domain"]
         if source_counts.get(domain, 0) >= max_per_source:
             continue
-            
-        # Check similarity against already selected
+
+        fp_c = fp_of(c)
+        if fp_c in selected_fps:
+            continue
+
         duplicate = False
         for s in selected:
             if are_similar(c["scraped_title"], s["scraped_title"]):
@@ -551,8 +592,9 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
                 break
         if duplicate:
             continue
-            
+
         selected.append(c)
+        selected_fps.add(fp_c)
         source_counts[domain] = source_counts.get(domain, 0) + 1
 
     # Second pass: Relax source caps if needed, but still preserve strict similarity check
@@ -562,7 +604,11 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
                 break
             if any(c["url"] == s["url"] for s in selected):
                 continue
-                
+
+            fp_c = fp_of(c)
+            if fp_c in selected_fps:
+                continue
+
             duplicate = False
             for s in selected:
                 if are_similar(c["scraped_title"], s["scraped_title"]):
@@ -570,15 +616,14 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
                     break
             if duplicate:
                 continue
-                
+
             selected.append(c)
+            fp_c = fp_of(c)
+            selected_fps.add(fp_c)
             domain = c["domain"]
             source_counts[domain] = source_counts.get(domain, 0) + 1
 
     # Cross-source low-threshold dedup: group similar titles using a lower threshold
-    # to catch same-story-different-source.
-    # If clustering would shrink below target_count, we keep the original selection
-    # to preserve output size (better a few duplicates than a short digest).
     orig_selected = list(selected)
     if len(selected) >= 3:
         clusters = []
@@ -595,11 +640,11 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
         clustered = [max(cluster, key=lambda x: x["hotness"]) for cluster in clusters]
         if len(clustered) >= target_count:
             selected = clustered[:target_count]
+            selected_fps = {fp_of(x) for x in selected}
         else:
             selected = orig_selected
 
-    # Refill pass: clustering can shrink the list, so we attempt to refill.
-    # If the strict similarity gate blocks too many additions, we relax it in a second pass.
+    # Refill pass
     if len(selected) < target_count:
         selected_urls = {s["url"] for s in selected}
         domain_counts = {}
@@ -620,8 +665,11 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
                 if c["url"] in selected_urls:
                     continue
 
+                fp_c = fp_of(c)
+                if fp_c in selected_fps:
+                    continue
+
                 domain = c["domain"]
-                # Slightly relax cap after refill, but keep diversity.
                 if domain_counts.get(domain, 0) >= (max_per_source + 1):
                     continue
 
@@ -630,6 +678,7 @@ def select_top_stories(candidates: dict, target_count=10, max_per_source=2) -> l
 
                 selected.append(c)
                 selected_urls.add(c["url"])
+                selected_fps.add(fp_c)
                 domain_counts[domain] = domain_counts.get(domain, 0) + 1
 
     return selected[:target_count]
@@ -1506,7 +1555,7 @@ def run_pipeline():
                 print(f"    ! Altcoin-heavy ({alt_c} vs {btc_c}), skipping.")
                 continue
 
-            # Strict blacklist keywords (if any of these occur >= 2 times, skip immediately)
+            # Strict blacklist keywords (if any of these occur at least once, skip immediately)
             strict_blacklist = [
                 "aave", "ethereum", "solana", "defi", "liquid staking", "babylon", 
                 "wbtc", "tbtc", "erc-20", "erc20", "cross-chain", "smart contract", 
@@ -1517,7 +1566,7 @@ def run_pipeline():
             ]
             trigger_word = None
             for w in strict_blacklist:
-                if raw_content.count(w) >= 2:
+                if raw_content.count(w) >= 1:
                     trigger_word = w
                     break
             if trigger_word and alt_c > btc_c * 0.3:
