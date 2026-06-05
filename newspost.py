@@ -1440,7 +1440,8 @@ def run_pipeline():
     
     def discover_candidates(time_range="day"):
         hits = []
-        for q in queries:
+        for qi, q in enumerate(queries, 1):
+            print(f"[-] {qi} of {len(queries)} queries: {q}")
             domain_match = re.search(r'site:([^\s]+)', q)
             domain = domain_match.group(1) if domain_match else None
             
@@ -1506,7 +1507,7 @@ def run_pipeline():
         if not u:
             continue
 
-        print(f"  [{len(all_candidates)+1}] Crawling: {url}")
+        print(f"  [{idx}/{len(all_hits)}] Crawling: {url}")
         try:
             if not is_article_link(url, ""):
                 if idx_cnt >= MAX_IDX:
@@ -1629,10 +1630,61 @@ def run_pipeline():
 
     # --- Strict Selection ---
     final = select_top_stories(all_candidates, target_count=10, max_per_source=2)
+    # --- Anti-repeat during selection (per-article URLs) ---
+    recent_story_url_set = set()
+    try:
+        import glob as _glob
+        import os as _os
+        recent_dir = os.path.join(out_base, 'digests')
+        md_files = sorted(_glob.glob(_os.path.join(recent_dir, 'newspost-*.md')), key=_os.path.getmtime, reverse=True)[:12]
+        now_ts = datetime.datetime.now(pytz.utc).timestamp()
+        for mf in md_files:
+            ts = _os.path.getmtime(mf)
+            if (now_ts - ts) > 24 * 3600:
+                continue
+            txt = open(mf, 'r', encoding='utf-8', errors='replace').read().lower()
+            urls = re.findall(r'http[s]?://[^\s\)\]\}]+', txt)
+            for u in urls:
+                uu = strip_query_string(u).lower()
+                if uu:
+                    recent_story_url_set.add(uu)
+    except Exception:
+        recent_story_url_set = set()
+
+    # Filter final selection in-place
+    filtered_final = []
+    for art in (final or []):
+        if art.get('url') and strip_query_string(art['url']).lower() in recent_story_url_set:
+            print(f"[ANTI-REPEAT] Skipping repeated story during selection: {art['url']}")
+            continue
+        filtered_final.append(art)
+    final = filtered_final
     print(f"[-] Selected {len(final)} unique, diversified stories.")
 
     # --- Summarize ---
     stories = []
+
+
+    # --- Build recent URL set for per-article anti-repeat (24h) ---
+    recent_story_url_set = set()
+    try:
+        import glob as _glob
+        import os as _os
+        recent_dir = os.path.join(out_base, "digests")
+        md_files = sorted(_glob.glob(_os.path.join(recent_dir, 'newspost-*.md')), key=_os.path.getmtime, reverse=True)[:12]
+        now_ts = datetime.datetime.now(pytz.utc).timestamp()
+        for mf in md_files:
+            ts = _os.path.getmtime(mf)
+            if (now_ts - ts) > 24 * 3600:
+                continue
+            txt = open(mf, 'r', encoding='utf-8', errors='replace').read().lower()
+            urls = re.findall(r'http[s]?://[^\s\)\]\}]+', txt)
+            for u in urls:
+                uu = strip_query_string(u).lower()
+                if uu:
+                    recent_story_url_set.add(uu)
+    except Exception:
+        recent_story_url_set = set()
     for i, art in enumerate(final, 1):
         print(f"[-] LLM [{i}/{len(final)}]: {art['url']}", art['domain'])
         content_to_use = art["content"] if art["content"] else art["content_raw"]
@@ -1873,7 +1925,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
     # Prevent posting the same story block twice within 24 hours.
     # We approximate this by comparing the set of story URLs in the generated digest
     # against the most recent saved digest files.
-    def load_recent_digest_story_urls(digest_dir: str, max_files: int = 12):
+    def load_recent_digest_story_urls(digest_dir: str, max_files: int = 1):
         import glob
         out = []
         md_files = sorted(glob.glob(os.path.join(digest_dir, 'newspost-*.md')), key=os.path.getmtime, reverse=True)
@@ -1897,24 +1949,8 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
 
     post = "--post" in sys.argv
     if post and "--post" in sys.argv:
-        recent = load_recent_digest_story_urls(digest_dir)
-        now_ts = datetime.datetime.now(pytz.utc).timestamp()
-        my_urls = digest_story_key(stories)
-        my_set = set(my_urls)
-
-        # If a recent digest within 24h has the same story URL set (exact match), skip posting.
-        # This is strict enough to avoid accidental false positives.
-        repeated = False
-        for ts, urls in recent:
-            if (now_ts - ts) <= 24 * 3600:
-                if set(urls) == my_set:
-                    repeated = True
-                    print(f"[ANTI-REPEAT] Skipping post: identical story URL set found within 24h in digest at ts={ts}.")
-                    break
-
-        if repeated:
-            sys.exit(0)
-
+        # Anti-repeat is already handled during selection (per-article URL check).
+        # Keep the end-of-run stage focused on publishing only.
         sub = f"BobClawblaw's Wall Observer Digest — {today} ({edition})"
         post_script = "/root/BobClawblaw/post_wall_observer.py"
         r = subprocess.run(
@@ -1927,6 +1963,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
             print(f"[!] {r.stderr}")
     else:
         print("[*] DRY-RUN done.")
+        print("    Re-run with --post to publish to Bitcointalk.")
         print("    Re-run with --post to publish to Bitcointalk.")
 
 def run_price_analysis_only():
