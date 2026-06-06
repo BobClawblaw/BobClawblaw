@@ -63,15 +63,21 @@ LOGGER = _setup_logger()
 # For SIGTERM, we can still log.
 _START_TS = time.time()
 _SIGTERM_SEEN = False
+_STAGE = "init"
+
+def _set_stage(s: str):
+    global _STAGE
+    _STAGE = str(s)
 
 def _log_exit(reason: str, posted: bool = False):
     try:
         elapsed_s = int(time.time() - _START_TS)
         LOGGER.info(
-            "newspost.py exit reason=%s posted_to_forum=%s elapsed_s=%s filename=%s",
+            "newspost.py exit reason=%s posted_to_forum=%s elapsed_s=%s stage=%s filename=%s",
             reason,
             str(posted).lower(),
             elapsed_s,
+            _STAGE,
             os.path.basename(globals().get("bb_path", "unknown")),
         )
     except Exception:
@@ -82,6 +88,10 @@ def _handle_sigterm(signum, frame):
     _SIGTERM_SEEN = True
     try:
         LOGGER.info("newspost.py signal=%s (SIGTERM) received", str(signum))
+    except Exception:
+        pass
+    try:
+        LOGGER.info("newspost.py stage_on_sigterm=%s", _STAGE)
     except Exception:
         pass
     _log_exit("SIGTERM", posted=False)
@@ -1466,6 +1476,7 @@ def run_pipeline():
         )
     except Exception:
         pass
+    _set_stage("setup")
     run_dt = datetime.datetime.now(pytz.utc).astimezone(CT)
     today = run_dt.strftime("%Y-%m-%d")
     # Suffix so multiple runs per day don't overwrite.
@@ -1486,11 +1497,13 @@ def run_pipeline():
     print(f"--- Starting {__version__} pipeline (model={OLLAMA_MODEL}, CT timezone) ---")
 
     # Fetch live BTC price early for filtering out dated high-price articles
+    _set_stage("fetch_market")
     mkt = get_btc_market_data()
     current_btc_price = mkt["price"]
     print(f"[-] Live BTC Price fetched early: ${current_btc_price:,.2f}")
 
     # --- 1. Discovery ---
+    _set_stage("discovery")
     queries = [
         'site:insights.glassnode.com bitcoin',
         'site:blog.bitmex.com bitcoin',
@@ -1568,6 +1581,7 @@ def run_pipeline():
     print(f"[-] Enqueued {len(all_hits)} URLs for crawl.")
 
     # --- Crawl ---
+    _set_stage("crawl")
     all_candidates = {}
     idx = 0
     idx_cnt = 0
@@ -1707,6 +1721,7 @@ def run_pipeline():
     print(f"[-] Candidate pool built: {len(all_candidates)} articles from {len(set(c['domain'] for c in all_candidates.values()))} sources.")
 
     # --- Strict Selection ---
+    _set_stage("selection")
     final = select_top_stories(all_candidates, target_count=10, max_per_source=2)
     # --- Anti-repeat during selection (per-article URLs) ---
     recent_story_url_set = set()
@@ -1740,6 +1755,7 @@ def run_pipeline():
     print(f"[-] Selected {len(final)} unique, diversified stories.")
 
     # --- Summarize ---
+    _set_stage("summarize")
     stories = []
 
 
@@ -1843,6 +1859,7 @@ Do NOT include markdown code block wrappers. Just raw JSON."""
         sys.exit(1)
 
     # --- Market metrics & assemble ---
+    _set_stage("assemble")
     print(f"[-] BTC (Live, fetched early): ${mkt['price']:,.2f} ({mkt['change_24h']:+.2f}%) MC:${mkt['mcap']/1e12:.2f}T")
 
     # Get local weekday for the prompt to prevent the LLM from guessing the wrong day
@@ -1951,6 +1968,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
             movers.append(f"- **{st['title']}:** {short_desc}")
 
     # --- Save files ---
+    _set_stage("write_files")
     dt = now_ct_12h()
     edition = get_time_of_day_edition()
     lines = []
@@ -2032,6 +2050,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
 
     post = "--post" in sys.argv
     if post and "--post" in sys.argv:
+        _set_stage("posting")
         # Anti-repeat is already handled during selection (per-article URL check).
         # Keep the end-of-run stage focused on publishing only.
         sub = f"BobClawblaw's Wall Observer Digest — {today} ({edition})"
