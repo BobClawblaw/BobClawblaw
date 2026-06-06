@@ -28,6 +28,75 @@ import time
 from functools import lru_cache
 
 # ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+import logging
+import atexit
+import signal
+
+LOG_DIR = "/root/logs"
+LOG_PATH = os.path.join(LOG_DIR, "newspost.log")
+
+def _setup_logger() -> logging.Logger:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    logger = logging.getLogger("newspost")
+    logger.setLevel(logging.INFO)
+
+    # Avoid duplicate handlers if the module is imported multiple times.
+    if any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '').endswith("newspost.log") for h in logger.handlers):
+        return logger
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s [%(process)d] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    fh = logging.FileHandler(LOG_PATH)
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+    return logger
+
+LOGGER = _setup_logger()
+
+# Best-effort termination logging.
+# If the cron runner kills the process with SIGKILL, handlers won't run.
+# For SIGTERM, we can still log.
+_START_TS = time.time()
+_SIGTERM_SEEN = False
+
+def _log_exit(reason: str, posted: bool = False):
+    try:
+        elapsed_s = int(time.time() - _START_TS)
+        LOGGER.info(
+            "newspost.py exit reason=%s posted_to_forum=%s elapsed_s=%s filename=%s",
+            reason,
+            str(posted).lower(),
+            elapsed_s,
+            os.path.basename(globals().get("bb_path", "unknown")),
+        )
+    except Exception:
+        pass
+
+def _handle_sigterm(signum, frame):
+    global _SIGTERM_SEEN
+    _SIGTERM_SEEN = True
+    try:
+        LOGGER.info("newspost.py signal=%s (SIGTERM) received", str(signum))
+    except Exception:
+        pass
+    _log_exit("SIGTERM", posted=False)
+    # Re-raise default termination
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+atexit.register(lambda: _log_exit("atexit" , posted=False))
+
+try:
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
 # RSS Source Registry (single source of truth)
 # ---------------------------------------------------------------------------
 # Keys are canonical domains (no scheme, no trailing slash). Values are lists
@@ -1388,6 +1457,15 @@ def fetch_direct_fallback(url: str) -> str:
     # v26: output files named v26-{date}.md / v26-{date}.bbcode.txt
     # --...
 def run_pipeline():
+    posted = False
+    try:
+        LOGGER.info(
+            "newspost.py start: post=%s argv=%s",
+            ("--post" in sys.argv),
+            json.dumps(sys.argv[1:], ensure_ascii=False),
+        )
+    except Exception:
+        pass
     run_dt = datetime.datetime.now(pytz.utc).astimezone(CT)
     today = run_dt.strftime("%Y-%m-%d")
     # Suffix so multiple runs per day don't overwrite.
@@ -1756,7 +1834,12 @@ Do NOT include markdown code block wrappers. Just raw JSON."""
 
     # Refuse to post if we don't have at least 3 legitimate stories
     if len(stories) < 3:
-        print(f"CRITICAL ERROR: Only found {len(stories)} legitimate stories. Refusing to generate digest or post as we need at least 3 stories.")
+        msg = f"CRITICAL ERROR: Only found {len(stories)} legitimate stories. Refusing to generate digest or post as we need at least 3 stories."
+        print(msg)
+        try:
+            LOGGER.error("newspost.py exit abort: %s", msg)
+        except Exception:
+            pass
         sys.exit(1)
 
     # --- Market metrics & assemble ---
@@ -1957,14 +2040,32 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
             ["python3", post_script, sub, bb_path],
             capture_output=True,
             text=True,
+            timeout=600,
         )
         print(r.stdout)
         if r.returncode:
             print(f"[!] {r.stderr}")
+        else:
+            posted = True
     else:
         print("[*] DRY-RUN done.")
         print("    Re-run with --post to publish to Bitcointalk.")
         print("    Re-run with --post to publish to Bitcointalk.")
+
+    try:
+        if posted:
+            LOGGER.info(
+                "newspost.py exit: posted_to_forum=true filename=%s subject=%s",
+                os.path.basename(bb_path),
+                sub,
+            )
+        else:
+            LOGGER.info(
+                "newspost.py exit: posted_to_forum=false filename=%s",
+                os.path.basename(bb_path),
+            )
+    except Exception:
+        pass
 
 def run_price_analysis_only():
     """Run just the market data + price_analysis LLM call, for testing."""
