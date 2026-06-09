@@ -1439,6 +1439,90 @@ def validate_numbers(summary: str, raw_content: str) -> str:
     
     return summary
 
+
+def int_to_words(n: int) -> str:
+    """Best-effort conversion for small integers used in BTC count heuristics."""
+    if n < 0:
+        return "minus " + int_to_words(-n)
+    if n < 20:
+        return [
+            "zero","one","two","three","four","five","six","seven","eight","nine","ten",
+            "eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen"
+        ][n]
+    if n < 100:
+        tens = (n // 10) * 10
+        ones = n % 10
+        tens_word = {
+            20: "twenty", 30: "thirty", 40: "forty", 50: "fifty",
+            60: "sixty", 70: "seventy", 80: "eighty", 90: "ninety"
+        }.get(tens, "")
+        return tens_word + ("-" + int_to_words(ones) if ones else "")
+    if n < 1000:
+        hundreds = n // 100
+        rem = n % 100
+        return int_to_words(hundreds) + " hundred" + (" " + int_to_words(rem) if rem else "")
+    if n < 1_000_000:
+        thousands = n // 1000
+        rem = n % 1000
+        if rem:
+            return int_to_words(thousands) + " thousand " + int_to_words(rem)
+        return int_to_words(thousands) + " thousand"
+    return str(n)
+
+
+def sanitize_title_dollar_units(title: str, raw_content: str) -> str:
+    """Fix currency/units mixups in extracted titles.
+
+    Incident pattern:
+      "BTC counts" like "one thousand to ten thousand BTC" get rewritten as "$10,000".
+
+    Rule:
+      - Any $ amount in title must be present verbatim in raw_content.
+      - If not present, and the same magnitude appears in raw_content as a BTC-count
+        word phrase near "BTC", rewrite "$X" as "X BTC".
+      - Otherwise drop the "$" sign.
+    """
+    if not title or not raw_content:
+        return title
+
+    raw_lc = raw_content.lower()
+
+    dollar_re = re.compile(r"\$(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?")
+
+    def repl(m: re.Match) -> str:
+        amt_token = m.group(1)  # may contain commas
+        full = m.group(0)
+
+        # Preserve if the exact $ amount appears in the article text.
+        if full.lower() in raw_lc:
+            return full
+
+        amt_clean = amt_token.replace(",", "")
+        try:
+            amt_int = int(amt_clean)
+        except ValueError:
+            return amt_token
+
+        words = int_to_words(amt_int).lower().strip()
+
+        # Heuristic: look for BTC-count words near 'btc'.
+        if words and "btc" in raw_lc:
+            btc_near_words = (
+                re.search(rf"btc[^.\n]{{0,80}}{re.escape(words)}", raw_lc, flags=re.IGNORECASE)
+                or re.search(rf"{re.escape(words)}[^.\n]{{0,80}}btc", raw_lc, flags=re.IGNORECASE)
+            )
+            if btc_near_words:
+                return f"{amt_token} BTC"
+
+        # Otherwise remove the $ sign.
+        return amt_token
+
+    out = dollar_re.sub(repl, title)
+    if out != title:
+        print(f"      [TITLE UNIT FIX] {title} -> {out}")
+    return out
+
+
 def fetch_direct_fallback(url: str) -> str:
     """Fetch raw HTML via requests with browser headers and strip to plain text."""
     headers = {
@@ -1783,7 +1867,7 @@ def run_pipeline():
         print(f"[-] LLM [{i}/{len(final)}]: {art['url']}", art['domain'])
         content_to_use = art["content"] if art["content"] else art["content_raw"]
 
-        prompt = f"""BobClawblaw here. I've been watching this market since we were buying at $10k.
+        prompt = f"""BobClawblaw here.
 
 Read this article carefully and give me the straight facts (no hype, no moon shots):
 
@@ -1830,6 +1914,7 @@ Do NOT include markdown code block wrappers. Just raw JSON."""
         title = title.split('|')[0].split('\u2013')[0].split('\u2014')[0].strip()
         title = title.rstrip("?'\"`()+")
         title = re.sub(r'\s+—\s*\d\d:\d\d.*$', '', title, flags=re.IGNORECASE)
+        title = sanitize_title_dollar_units(title, art["content_raw"] or art["content"])
 
         summary_raw = parsed.get("summary", "")
         
