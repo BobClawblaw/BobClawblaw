@@ -947,24 +947,6 @@ def get_onchain_metrics() -> dict:
         
     return metrics
 
-def get_derivatives_metrics() -> dict:
-    """Fetch live Bitcoin derivatives market metrics (Open Interest, Funding Rate) from Kraken Futures public API."""
-    print("[-] Fetching live derivatives metrics from Kraken Futures...")
-    metrics = {"open_interest": 0.0, "funding_rate_annual": 0.0, "change_24h": 0.0}
-    try:
-        r = requests.get("https://futures.kraken.com/derivatives/api/v3/tickers", timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            btc_perps = [t for t in data.get('tickers', []) if t.get('symbol') == 'PI_XBTUSD']
-            if btc_perps:
-                perp = btc_perps[0]
-                metrics["open_interest"] = float(perp.get("openInterest", 0.0))
-                metrics["change_24h"] = float(perp.get("change24h", 0.0))
-                raw_funding = float(perp.get("fundingRate", 0.0))
-                metrics["funding_rate_annual"] = raw_funding * 86400 * 365 * 100
-    except Exception as e:
-        print(f"Kraken Futures API Error: {e}")
-    return metrics
 
 def get_economic_events(date_str: str) -> str:
     """Fetch relevant US economic calendar events (CPI, NFP, GDP, FOMC, Fed, PCE) from TradingEconomics API."""
@@ -1954,7 +1936,6 @@ Do NOT include markdown code block wrappers. Just raw JSON."""
     history = history_data
     tech = get_technical_context(history.get("prices", []))
     onchain = get_onchain_metrics()
-    derivs = get_derivatives_metrics()
     macro = get_macro_context()
     premium = get_spot_premium()
     eco = get_economic_events(datetime.datetime.now(pytz.utc).astimezone(CT).strftime("%Y-%m-%d"))
@@ -1993,9 +1974,7 @@ Do NOT include markdown code block wrappers. Just raw JSON."""
 - Recent Volatility (3d StdDev): {tech['vol']:,.2f}
 - Estimated Hashrate: {onchain['hashrate_eh']:.1f} EH/s (Diff change: {onchain['diff_change']:+.2f}%)
 - Recommended fees: Fast {onchain['fast_fee']} sat/vB | Min {onchain['min_fee']} sat/vB
-- Derivatives Open Interest: ${derivs['open_interest']/1e6:,.2f}M
-- Perpetual Funding Rate (annualized): {derivs['funding_rate_annual']:+.4f}%
-- Fear & Greed Index: {macro['fng']} ({macro['sentiment']} | 7-day momentum: {macro['momentum_7d']:+d} points, trend is {macro['trend']})
+
 - Spot Arbitrage Premium (VW Average): {premium['premium']:+.2f} USD (Coinbase: ${premium['coinbase']:,.2f}, Kraken: ${premium['kraken']:,.2f}, Binance: ${premium['binance']:,.2f})
 {eco_str}{divergence_context}
 
@@ -2029,7 +2008,6 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
     if not outlook:
         outlook = (
             f"Fear & Greed index is sitting at {macro['fng']} ({macro['sentiment']}), which is {macro['trend']} over the week with a {macro['momentum_7d']:+d} point shift. "
-            f"We've got ${derivs['open_interest']/1e6:,.1f}M in derivatives Open Interest with an annualized funding rate of {derivs['funding_rate_annual']:+.3f}%. "
             f"Just keeping my head down and observing."
         )
     if not price_analysis:
@@ -2041,7 +2019,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
             f"Looking back, we're seeing {trend_3d} over three days ({history['3d_change']:+.2f}%) and {trend_7d} over the week ({history['7d_change']:+.2f}%), "
             f"while the 30-day view points to {trend_30d} ({history['30d_change']:+.2f}%). "
             f"The 30-day moving average sits at ${tech['ma']:,.2f} with a 3-day volatility reading of {tech['vol']:,.2f}. "
-            f"With hashrate holding at {onchain['hashrate_eh']:.1f} EH/s, derivatives funding predicting {derivs['funding_rate_annual']:+.3f}% annualized, "
+            f"With hashrate holding at {onchain['hashrate_eh']:.1f} EH/s, "
             f"and the Coinbase spot premium weighted average premium sitting at {premium['premium']:+.2f} USD, "
             f"the network is healthy while we chop through this range."
         )
@@ -2088,6 +2066,20 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
         lines.append(f"**Summary:** {st['summary']}")
         lines.append("")
     body = '\n'.join(lines)
+
+    # Derivatives metrics gate: drop any derivatives open-interest / funding
+    # rate lines in case the model hallucinates or includes them from older
+    # templates.
+    _deriv_needles = [
+        "derivatives open interest",
+        "perpetual funding rate",
+        "open interest",
+        "funding rate",
+        "perpetual funding",
+    ]
+    body = "\n".join(
+        [ln for ln in body.split("\n") if not any(n in ln.lower() for n in _deriv_needles)]
+    )
 
     # Save markdown draft
     with open(md_path, "w", encoding="utf-8") as f:
@@ -2182,7 +2174,6 @@ def run_price_analysis_only():
     history = history_data
     tech = get_technical_context(history.get("prices", []))
     onchain = get_onchain_metrics()
-    derivs = get_derivatives_metrics()
     macro = get_macro_context()
     premium = get_spot_premium()
     eco = get_economic_events(datetime.now(pytz.utc).astimezone(CT).strftime("%Y-%m-%d"))
@@ -2202,9 +2193,7 @@ def run_price_analysis_only():
 - Recent Volatility (3d StdDev): {tech['vol']:,.2f}
 - Estimated Hashrate: {onchain['hashrate_eh']:.1f} EH/s (Diff change: {onchain['diff_change']:+.2f}%)
 - Recommended fees: Fast {onchain['fast_fee']} sat/vB | Min {onchain['min_fee']} sat/vB
-- Derivatives Open Interest: ${derivs['open_interest']/1e6:,.2f}M
-- Perpetual Funding Rate (annualized): {derivs['funding_rate_annual']:+.4f}%
-{eco_str}
+
 
 Note: Today is {local_weekday}.
 
@@ -2227,7 +2216,6 @@ def run_opening_test_only():
     history = history_data
     tech = get_technical_context(history.get("prices", []))
     onchain = get_onchain_metrics()
-    derivs = get_derivatives_metrics()
     macro = get_macro_context()
     premium = get_spot_premium()
     eco = get_economic_events(datetime.now(pytz.utc).astimezone(CT).strftime("%Y-%m-%d"))
@@ -2247,9 +2235,7 @@ def run_opening_test_only():
 - Recent Volatility (3d StdDev): {tech['vol']:,.2f}
 - Estimated Hashrate: {onchain['hashrate_eh']:.1f} EH/s (Diff change: {onchain['diff_change']:+.2f}%)
 - Recommended fees: Fast {onchain['fast_fee']} sat/vB | Min {onchain['min_fee']} sat/vB
-- Derivatives Open Interest: ${derivs['open_interest']/1e6:,.2f}M
-- Perpetual Funding Rate (annualized): {derivs['funding_rate_annual']:+.4f}%
-{eco_str}
+
 
 Note: Today is {local_weekday}.
 
