@@ -140,9 +140,8 @@ RSS_MAX_LINKS_PER_DOMAIN = 25
 RSS_KNOWN_DOMAINS = tuple(RSS_FEED_REGISTRY.keys())
 
 # --- Constants & Config ---
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "Jarcgon/Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-uncenfull:latest"
-OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
+LLAMA_SERVER_URL = "http://127.0.0.1:8081/v1"
+LLAMA_MODEL = "Qwen3.6-35B-A3B-Abliterated-Heretic-Q4_K_M.gguf"
 SEARXNG_URL = "http://127.0.0.1:8080/search"
 FIRECRAWL_SCRAPE_URL = "http://localhost:3002/v1/scrape"
 
@@ -164,6 +163,7 @@ DISCARD_KEYWORDS = [
     "borrowing", "liquid staking", "wbtc", "tbtc", "smart contract",
     "super pac", "pac", "fairshake", "election", "campaign finance",
     "lobby", "lobbying", "stablecoin", "stablecoins", "web3",
+    "jim cramer", "cramer", "cnbc host", "inverse cramer", "cramer's",
 ]
 
 KEEP_KEYWORDS = [
@@ -1260,34 +1260,38 @@ def is_article_link(url: str, parent_url: str) -> bool:
         pass
     return False
 
-def query_ollama(prompt: str) -> str | None:
+def query_llm(prompt: str) -> str | None:
+    """Legacy prompt-based call, routed to llama.cpp /completions."""
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": LLAMA_MODEL,
         "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": 0.1, "num_predict": 3096},
+        "temperature": 0.1,
+        "n_predict": 3096,
     }
     try:
-        r = requests.post(OLLAMA_URL, json=payload, timeout=300)
+        r = requests.post(f"{LLAMA_SERVER_URL}/completions", json=payload, timeout=300)
         if r.status_code == 200:
-            return r.json().get("response", "").strip()
+            # llama.cpp native /completions returns flat dict with 'content' key
+            return r.json().get("content", "").strip()
     except Exception as e:
-        print(f"[!] Ollama Error: {e}")
+        print(f"[!] LLM Error: {e}")
     return None
 
-def query_ollama_chat(prompt: str) -> str | None:
+
+def query_llm_chat(prompt: str) -> str | None:
+    """Chat-style call, routed to llama.cpp /v1/chat/completions."""
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": LLAMA_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-        "options": {"temperature": 0.1, "num_predict": 3096},
+        "temperature": 0.1,
+        "max_tokens": 3096,
     }
     try:
-        r = requests.post(OLLAMA_CHAT_URL, json=payload, timeout=300)
+        r = requests.post(f"{LLAMA_SERVER_URL}/chat/completions", json=payload, timeout=300)
         if r.status_code == 200:
-            return r.json()["message"]["content"].strip()
+            return r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print(f"[!] Ollama Chat Error: {e}")
+        print(f"[!] LLM Chat Error: {e}")
     return None
 
 def extract_json(s: str | None) -> dict | None:
@@ -1296,6 +1300,24 @@ def extract_json(s: str | None) -> dict | None:
     try:
         return json.loads(s.strip())
     except Exception:
+        # Model may prepend thinking/analysis text — find the JSON by brace matching
+        # from the last } backwards to its matching {
+        last_close = s.rfind('}')
+        if last_close >= 0:
+            depth = 0
+            for i in range(last_close, -1, -1):
+                if s[i] == '}':
+                    depth += 1
+                elif s[i] == '{':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = s[i:last_close + 1]
+                        try:
+                            return json.loads(candidate.strip())
+                        except Exception:
+                            pass
+                        break
+        # Standard try from the beginning
         m = re.search(r'({.*})', s, re.DOTALL)
         if m:
             try:
@@ -1560,7 +1582,7 @@ def run_pipeline():
     md_path = os.path.join(digest_dir, f"newspost-{__version__}-{file_stamp}.md")
     bb_path = os.path.join(digest_dir, f"newspost-{__version__}-{file_stamp}.bbcode.txt")
 
-    print(f"--- Starting {__version__} pipeline (model={OLLAMA_MODEL}, CT timezone) ---")
+    print(f"--- Starting {__version__} pipeline (model={LLAMA_MODEL}, CT timezone) ---")
 
     # Fetch live BTC price early for filtering out dated high-price articles
     _set_stage("fetch_market")
@@ -1855,7 +1877,8 @@ Read this article carefully and give me the straight facts (no hype, no moon sho
 
 {content_to_use[:10000]}
 
-Return STRICT VALID JSON (no markdown, no code blocks, just raw JSON):
+Return STRICT VALID JSON (no markdown, no code blocks, just raw JSON). DO NOT REASON, DO NOT THINK OUT LOUD, DO NOT ANALYZE BEFORE RESPONDING. Output ONLY the JSON object immediately.
+
 - title: short, clean, no site branding — just what matters
 - summary: 5 sentences of real substance. Skip the filler. Write like someone at a ranch checking the markets, not a trading desk analyst. Grounded, plainspoken, observant. Short sentences, steady pacing. Wry humor when warranted. No "crypto bro" slang (no moon, no apes, no degens, no GM), no rocket emojis. If something is wrong, "I suck" — no deflection.
 - published_time: YYYY-MM-DD or YYYY-MM-DD HH:MM
@@ -1863,23 +1886,24 @@ Return STRICT VALID JSON (no markdown, no code blocks, just raw JSON):
 
 Do NOT include markdown code block wrappers. Just raw JSON."""
 
-        resp = query_ollama(prompt)
+        resp = query_llm(prompt)
         parsed = extract_json(resp)
 
         if not parsed or not parsed.get("summary") or "Oops" in parsed["summary"]:
-            resp2 = query_ollama_chat(
-                f"Article: {art['url']}\n\nCONTENT:\n{clean_text(art['content_raw'] or art['content'])[:8000]}\n\nExtract: title (short), summary (5 sentences, real content, no [Skip to ...], no image refs, no anchor links, no repeated filler sentences), published_time.\n\nReturn ONLY JSON: {{\"title\":\"...\",\"summary\":\"...\",\"published_time\":\"...\"}}")
+            resp2 = query_llm_chat(
+                f"Article: {art['url']}\n\nCONTENT:\n{clean_text(art['content_raw'] or art['content'])[:8000]}\n\nExtract: title (short), summary (5 sentences, real content, no [Skip to ...], no image refs, no anchor links, no repeated filler sentences), published_time.\n\nReturn ONLY JSON. DO NOT REASON, DO NOT THINK OUT LOUD, DO NOT ANALYZE BEFORE RESPONDING. Output ONLY the JSON object immediately.\n\nReturn ONLY JSON: {{\"title\":\"...\",\"summary\":\"...\",\"published_time\":\"...\"}}")
             parsed2 = extract_json(resp2)
             if parsed2 and parsed2.get("summary") and "Oops" not in parsed2["summary"]:
                 parsed = parsed2
             else:
                 summary = extract_better_summary(art["content_raw"] or art["content"])
                 summary = clean_text(summary)
+                parsed["summary"] = summary
                 if "==" in summary or "[" in summary or "]" in summary or not summary or len(summary) < 30:
                     # Summary bleed detected, attempt to re-extract via chat API
                     print("      [FALLBACK WARNING] Summary field bleed or bad format in extract_better_summary, re-extracting via chat...")
-                    resp_chat = query_ollama_chat(
-                        f"Article: {art['url']}\n\nCONTENT:\n{clean_text(art['content_raw'] or art['content'])[:8000]}\n\nExtract: title (short), summary (5 sentences, real content, no [Skip to ...], no image refs, no anchor links, no repeated filler sentences), published_time.\n\nReturn ONLY JSON: {{\"title\":\"...\",\"summary\":\"...\",\"published_time\":\"...\"}}")
+                    resp_chat = query_llm_chat(
+                        f"Article: {art['url']}\n\nCONTENT:\n{clean_text(art['content_raw'] or art['content'])[:8000]}\n\nExtract: title (short), summary (5 sentences, real content, no [Skip to ...], no image refs, no anchor links, no repeated filler sentences), published_time.\n\nReturn ONLY JSON. DO NOT REASON, DO NOT THINK OUT LOUD, DO NOT ANALYZE BEFORE RESPONDING. Output ONLY the JSON object immediately.\n\nReturn ONLY JSON: {{\"title\":\"...\",\"summary\":\"...\",\"published_time\":\"...\"}}")
                     parsed_chat = extract_json(resp_chat)
                     if parsed_chat and parsed_chat.get("summary") and "Oops" not in parsed_chat["summary"]:
                         summary = parsed_chat["summary"]
@@ -1992,7 +2016,7 @@ Write me four things, in BobClawblaw's voice:
 
 Return valid JSON with keys opening, outlook, price_analysis, and movers (as an array of strings)."""
 
-    ctx = query_ollama(ctx_prompt)
+    ctx = query_llm(ctx_prompt)
     ctx_p = extract_json(ctx)
     opening = ctx_p["opening"] if ctx_p and ctx_p.get("opening") else ""
     outlook = ctx_p["outlook"] if ctx_p and ctx_p.get("outlook") else ""
@@ -2092,7 +2116,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
 
     enable_footer = ("--with-footer" in sys.argv) or ("--footer" in sys.argv)
     if enable_footer:
-        _ftr = f"[i][size=8pt]Spotted by BobClawblaw {__version__} ({OLLAMA_MODEL})[/size][/i]"
+        _ftr = f"[i][size=8pt]Spotted by BobClawblaw {__version__} ({LLAMA_MODEL})[/size][/i]"
         bb_wrapped += "\n" + _ftr + "\n"
 
     with open(bb_path, "w", encoding="utf-8") as f:
@@ -2200,7 +2224,7 @@ Note: Today is {local_weekday}.
 Just write me a price analysis, in BobClawblaw's voice:
 - 3-5 sentences analyzing the price action. plainspoken, grounded, observant. Reference the live numbers. If price is down, call it. If sideways, call it. Don't invent. Incorporate on-chain blocks, leverage data, sentiment momentum, and US spot premiums where useful."""
     print("Calling LLM for price analysis...")
-    result = query_ollama(ctx_prompt)
+    result = query_llm(ctx_prompt)
     result = result.strip()
     print(f"PRICE ANALYSIS: {result}")
     
@@ -2246,7 +2270,7 @@ Write me two things, in BobClawblaw's voice:
 Return valid JSON with keys opening and outlook."""
     
     print("Calling LLM for opening and outlook...")
-    result = query_ollama(ctx_prompt)
+    result = query_llm(ctx_prompt)
     print("Raw response from LLM:")
     print(result)
     print("\nParsed JSON:")
