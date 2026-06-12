@@ -222,14 +222,34 @@ def parse_posts(html: str, page_num: int) -> List[Tuple[int, str, int, str, int,
         if len(body) < 20:
             continue
 
-        # Timestamp (best-effort; sometimes empty)
+       # Timestamp: SMF puts it in the td_headerandpost td. The date appears
+        # as plain text between the subject and the first "Quote from:" block
+        # (or the post number).  We only want the post's own date.
         timestamp = ""
-        st = soup_chunk.find("span", class_="smalltext")
-        if st:
-            t = st.get_text(" ", strip=True)
-            # Avoid legends-only content; keep if it looks like a dated post.
-            if "Posted" in t or re.search(r"\b(AM|PM)\b", t) or re.search(r"\b20\d{2}\b", t):
-                timestamp = t
+        hdr_td = soup_chunk.find("td", class_="td_headerandpost")
+        if hdr_td:
+            # Split into text nodes preserving order, stop at "Quote from:" or "#"
+            all_strings = list(hdr_td.strings)
+            date_parts = []
+            for s in all_strings:
+                s_stripped = s.strip()
+                if not s_stripped:
+                    continue
+                # Stop at quoted message markers or post number
+                if s_stripped.startswith("#") or s_stripped.startswith("Quote from:"):
+                    break
+                if re.search(r'\b(AM|PM)\b', s_stripped) or re.search(r'\b20\d{2}\b', s_stripped) or s_stripped.lower() == "today":
+                    date_parts.append(s_stripped)
+            if date_parts:
+                timestamp = " ".join(date_parts)
+        # Fallback: try smalltext near the post body (original logic)
+        if not timestamp:
+            st = soup_chunk.find("span", class_="smalltext")
+            if st:
+                t = st.get_text(" ", strip=True)
+                # Avoid legends-only content; keep if it looks like a dated post.
+                if "Posted" in t or re.search(r"\b(AM|PM)\b", t) or re.search(r"\b20\d{2}\b", t):
+                    timestamp = t
 
         # Chart detection (conservative)
         blob = (subject + "\n" + body).lower()

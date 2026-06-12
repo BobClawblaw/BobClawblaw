@@ -199,6 +199,95 @@ def post_message(topic_id, subject, message, board="57"):
 
 
 # ------------------------------------------------------------------
+# reply to a specific message on the same topic
+# ------------------------------------------------------------------
+
+def reply_to_message(msg_id, topic_id, subject, message, board="57"):
+    """Reply to a specific message on Bitcointalk.
+
+    Uses the same post form but targets a reply context. The SMF post form
+    on a topic page returns sc/seqnum tokens suitable for replying to that
+    topic. We set the reply context by including the referenced msg_id.
+
+    Returns True on success, False on failure.
+    """
+    # Fetch the post form page to get sc/seqnum tokens
+    url = f"https://bitcointalk.org/index.php?action=post;topic={topic_id};board={board}"
+    page = _run_cmd(f'curl -s -b {COOKIE_PATH} "{url}"')
+    sc = re.search(r'name="sc" value="([^"]+)"', page)
+    seqnum = re.search(r'name="seqnum" value="([^"]+)"', page)
+    if not sc or not seqnum:
+        print("FAILED: Could not retrieve sc or seqnum tokens for reply")
+        return False
+
+    import urllib.parse, subprocess as sp
+
+    post_url = f"https://bitcointalk.org/index.php?action=post2;start=0;board={board}"
+    payload = {
+        "topic": topic_id,
+        "subject": subject,
+        "message": message,
+        "post": "Post",
+        "notify": "0",
+        "do_watch": "0",
+        "goback": "1",
+        "additional_options": "0",
+        "sc": sc.group(1),
+        "seqnum": seqnum.group(1),
+        # Tell SMF we're replying (not creating a new topic)
+        "reply_to_msg": msg_id,
+    }
+    encoded = urllib.parse.urlencode(payload)
+    out = sp.run(
+        f'curl -i -s -b {COOKIE_PATH} -d "{encoded}" "{post_url}"',
+        shell=True, capture_output=True, text=True, timeout=30,
+    )
+    out_text = out.stdout
+
+    loc_match = re.search(r'(?i)location:\s*([^\r\n]+)', out_text)
+    if loc_match:
+        loc = loc_match.group(1)
+        if f"topic={topic_id}" in loc:
+            print(f"SUCCESS: Reply posted to msg {msg_id} on topic {topic_id}!")
+            return True
+        elif "#new" in loc:
+            print(f"SUCCESS: Reply redirected to #new (msg {msg_id}).")
+            return True
+        print(f"REPLY FAILED: Redirected to unexpected URL: {loc}")
+        return False
+
+    if "90 seconds" in out_text:
+        print("REPLY FAILED: Cooldown limit (90 seconds) triggered.")
+    else:
+        print("REPLY FAILED: Response did not indicate success.")
+    return False
+
+
+# ------------------------------------------------------------------
+# helpers for building quoted replies
+# ------------------------------------------------------------------
+
+def build_quoted_reply(author, msg_id, topic_id, date_str, quoted_text):
+    """Build a BBCode quote block with the author name, post link, and date.
+
+    SMF auto-resolves [quote=...] format, but including the post link and
+    date is important for context. The format is:
+
+        [quote=AuthorName]Original message here
+        --Posted: June 12, 2026, 02:58:55 AM (Msg #12345678)[/quote]
+
+    Returns the formatted quote block as a string.
+    """
+    post_link = f"https://bitcointalk.org/index.php?msg={msg_id}"
+    bb_author = author
+    quote_header = f"[quote={bb_author}]"
+    quote_footer = ""
+    if date_str:
+        quote_footer = f"\n--Posted: {date_str} (Msg #{msg_id})"
+    return f"{quote_header}\n{quoted_text}{quote_footer}\n[/quote]"
+
+
+# ------------------------------------------------------------------
 # convenience: login-then-POST
 # ------------------------------------------------------------------
 
