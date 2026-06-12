@@ -423,7 +423,10 @@ def extract_better_summary(text: str) -> str:
     return short + "..."
 
 def enforce_five_sentences(summary: str) -> str:
-    sents = re.split(r'(?<=[.!?])\s+', summary)
+    # Split on sentence boundaries but NOT on decimal points (e.g. $1.24 not $1 and 24)
+    # (?<=.)(?!\d) matches a . not followed by a digit
+    # Also avoid periods in URLs like http://example.com
+    sents = re.split(r'(?<=[.!?])(?!\d)(?<!://)\s+', summary)
     sents = [s.strip() for s in sents if s.strip() and len(s) > 10]
     if 5 <= len(sents):
         return " ".join(sents[:5])
@@ -2031,8 +2034,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
         )
     if not outlook:
         outlook = (
-            f"Fear & Greed index is sitting at {macro['fng']} ({macro['sentiment']}), which is {macro['trend']} over the week with a {macro['momentum_7d']:+d} point shift. "
-            f"Just keeping my head down and observing."
+            f"Fear & Greed index is sitting at {macro['fng']} ({macro['sentiment']}), which is {macro['trend']} over the week with a {macro['momentum_7d']:+d} point shift."
         )
     if not price_analysis:
         trend_3d = "upward momentum" if history['3d_change'] > 0 else "slipping momentum"
@@ -2051,7 +2053,7 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
         # Fallback to generating movers dynamically from the actual story titles
         movers = []
         for st in stories[:4]:
-            short_desc = st["summary"].split(".")[0] + "."
+            short_desc = st["summary"].split(". ")[0] + "." if ". " in st["summary"] else st["summary"]
             movers.append(f"- **{st['title']}:** {short_desc}")
 
     # --- Save files ---
