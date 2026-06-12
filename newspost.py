@@ -24,6 +24,7 @@ import subprocess
 from urllib.parse import urlparse
 from dateutil.parser import parse as dateutil_parse
 import warnings
+import sqlite3
 import time
 from functools import lru_cache
 
@@ -1373,6 +1374,58 @@ def markdown_to_bbcode(md_text: str) -> str:
     
     return bb
 
+def restore_username_case(text: str) -> str:
+    """Restore correct displayname case from the Wall Observer DB.
+
+    The LLM frequently normalizes Bitcointalk usernames to all-lowercase.
+    This function reads all distinct author names from wall_posts.db,
+    builds a case map, and replaces any occurrence of the lowercase form
+    in *text* with the stored canonical case.
+
+    Only replaces when the lowercase match is unambiguous (at least 5
+    characters) and is bounded by word boundaries, quote blocks, or
+    whitespace to avoid corrupting numbers or substrings.
+    """
+    try:
+        db_path = os.path.join(
+            os.path.expanduser("~/.hermes/bobclawblaw"),
+            "wall_posts.db",
+        )
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT author FROM posts GROUP BY author"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return text
+
+    # Build case map: lowercase -> canonical case
+    case_map = {}
+    for (author,) in rows:
+        if author and len(author) >= 5:
+            key = author.lower()
+            if key not in case_map:
+                case_map[key] = author
+
+    if not case_map:
+        return text
+
+    # Sort by length desc so longer names (e.g. "BobClawblaw") beat shorter
+    # substrings (e.g. "bobclawblaw") in overlapping positions.
+    sorted_keys = sorted(case_map.keys(), key=len, reverse=True)
+
+    for lk in sorted_keys:
+        canonical = case_map[lk]
+        if canonical.lower() == canonical:
+            continue  # already proper case
+        # Replace only when bounded by non-alnum chars (word boundary-like)
+        # to avoid corrupting substrings inside other words.
+        pattern = r'(?<![a-zA-Z0-9])' + re.escape(lk) + r'(?![a-zA-Z0-9])'
+        text = re.sub(pattern, canonical, text, flags=re.IGNORECASE)
+
+    return text
+
+
 def clean_number(n: str):
     """Convert raw number token to float, return None if not convertible."""
     token = n
@@ -2092,6 +2145,9 @@ Return valid JSON with keys opening, outlook, price_analysis, and movers (as an 
         lines.append(f"**Summary:** {st['summary']}")
         lines.append("")
     body = '\n'.join(lines)
+
+    # Restore correct username case from Wall Observer DB
+    body = restore_username_case(body)
 
     # Derivatives metrics gate: drop any derivatives open-interest / funding
     # rate lines in case the model hallucinates or includes them from older
