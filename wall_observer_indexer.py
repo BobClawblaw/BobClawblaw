@@ -322,17 +322,35 @@ def run(
         rows = parse_posts(html, page_num=int(anc))
         for row in rows:
             msg_id = row[0]
-            if conn.execute("SELECT 1 FROM _seen WHERE msg_id=?", (msg_id,)).fetchone():
-                continue
-
-            conn.execute(
-                """INSERT INTO posts
-                (msg_id, author, author_uid, date, page_num, is_chart, subject, body)
-                VALUES (?,?,?,?,?,?,?,?)""",
-                row,
-            )
-            conn.execute("INSERT INTO _seen (msg_id) VALUES (?)", (msg_id,))
-            inserted += 1
+            # Fetch current date from DB
+            cur_date = conn.execute(
+                "SELECT date FROM posts WHERE msg_id=?", (msg_id,)
+            ).fetchone()
+            if cur_date:
+                current_date = cur_date[0]
+                new_date = row[3]
+                # Update logic:
+                # 1. If current date is "Today" (stale), always overwrite
+                # 2. If new date is "Today" but current is real, skip (new crawl not caught up)
+                # 3. If both are real and different, update (SMF timing variance)
+                if current_date and new_date and current_date != new_date:
+                    if "Today" in current_date:
+                        conn.execute("UPDATE posts SET date=? WHERE msg_id=?", (new_date, msg_id))
+                        print(f"[date-update] msg_id={msg_id}: '{current_date}' -> '{new_date}'")
+                    elif "Today" not in new_date:
+                        # New date is real, current is real — update only if significantly different
+                        conn.execute("UPDATE posts SET date=? WHERE msg_id=?", (new_date, msg_id))
+                        print(f"[date-update] msg_id={msg_id}: '{current_date}' -> '{new_date}'")
+            else:
+                # New post — insert as before
+                conn.execute(
+                    """INSERT INTO posts
+                    (msg_id, author, author_uid, date, page_num, is_chart, subject, body)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    row,
+                )
+                conn.execute("INSERT INTO _seen (msg_id) VALUES (?)", (msg_id,))
+                inserted += 1
 
     if prune_missing and prune_window:
         print(f"-- pruning missing posts in anchors {min(prune_window)}..{max(prune_window)} (count={len(prune_window)}) --")
